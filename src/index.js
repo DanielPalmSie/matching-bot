@@ -41,6 +41,15 @@ function saveSessions() {
     fs.writeFileSync(sessionFile, JSON.stringify(sessionStore, null, 2));
 }
 
+class ApiError extends Error {
+    constructor(message, status = null, isAuthError = false) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+        this.isAuthError = isAuthError;
+    }
+}
+
 function getSession(ctx) {
     const tgId = ctx.from?.id;
     if (!tgId) {
@@ -59,6 +68,14 @@ function resetState(session) {
     session.currentChatId = null;
 }
 
+function clearAuth(session) {
+    session.token = null;
+    session.refreshToken = null;
+    session.backendUserId = null;
+    resetState(session);
+    saveSessions();
+}
+
 function buildApiUrl(pathname) {
     const base = apiUrl.replace(/\/+$/, '');
     if (!pathname) return base;
@@ -69,34 +86,51 @@ function buildApiUrl(pathname) {
     return `${base}${normalizedPath}`;
 }
 
-function getFriendlyError(error) {
+function normalizeApiError(error) {
     if (error.response) {
-        console.error('API error status:', error.response.status);
-        console.error('API error response:', error.response.data);
-        if (error.response.status === 401 || error.response.status === 403) {
-            return 'Неверный логин или пароль. Попробуйте ещё раз.';
-        }
+        const status = error.response.status;
+
         if (typeof error.response.data === 'string') {
-            if (error.response.data.toLowerCase().includes('<html')) {
-                return '❌ Произошла ошибка на сервере. Попробуйте позже.';
-            }
-            return error.response.data;
+            const isHtml = error.response.data.toLowerCase().includes('<html');
+            return {
+                message: isHtml ? '❌ Произошла ошибка на сервере. Попробуйте позже.' : error.response.data,
+                status,
+                isAuthError: status === 401 || status === 403,
+            };
         }
-        if (error.response.data?.message) return error.response.data.message;
-        if (error.response.data?.error) return error.response.data.error;
+
         if (error.response.data?.violations) {
-            return error.response.data.violations
-                .map((v) => `${v.propertyPath}: ${v.message}`)
-                .join('\n');
+            return {
+                message: error.response.data.violations
+                    .map((v) => `${v.propertyPath}: ${v.message}`)
+                    .join('\n'),
+                status,
+                isAuthError: status === 401 || status === 403,
+            };
         }
-        return `Ошибка ${error.response.status}: попробуйте позже.`;
+
+        return {
+            message: error.response.data?.message ||
+                     error.response.data?.error ||
+                     `Ошибка ${status}: попробуйте позже.`,
+            status,
+            isAuthError: status === 401 || status === 403,
+        };
     }
+
     if (error.request) {
-        console.error('API request error:', error.message);
-        return 'Не удалось связаться с сервером. Проверьте соединение или попробуйте позже.';
+        return {
+            message: 'Не удалось связаться с сервером. Проверьте соединение или попробуйте позже.',
+            status: null,
+            isAuthError: false,
+        };
     }
-    console.error('Unexpected API error:', error);
-    return '❌ Произошла ошибка на сервере. Попробуйте позже.';
+
+    return {
+        message: '❌ Произошла ошибка на сервере. Попробуйте позже.',
+        status: null,
+        isAuthError: false,
+    };
 }
 
 async function apiRequest(method, url, data, token) {
@@ -109,9 +143,19 @@ async function apiRequest(method, url, data, token) {
             timeout: 10000,
         });
         return res.data;
-    } catch (error) {
-        throw new Error(getFriendlyError(error));
+    } catch (err) {
+        const norm = normalizeApiError(err);
+        throw new ApiError(norm.message, norm.status, norm.isAuthError);
     }
+}
+
+async function handleApiError(ctx, session, error, fallbackMessage) {
+    if (error instanceof ApiError && error.isAuthError) {
+        clearAuth(session);
+        await ctx.reply('⚠️ Сессия истекла или недействительна. Пожалуйста, войдите ещё раз через кнопку «Войти» или команду /start.');
+        return;
+    }
+    await ctx.reply(error.message || fallbackMessage);
 }
 
 const mainMenuKeyboard = Markup.inlineKeyboard([
@@ -150,7 +194,11 @@ async function handleLogin(ctx, session, email, password) {
     } catch (error) {
         resetState(session);
         saveSessions();
-        return ctx.reply(error.message || 'Неверный логин или пароль. Попробуйте ещё раз.');
+        if (error instanceof ApiError && error.status === 401) {
+            return ctx.reply('Неверный логин или пароль. Попробуйте ещё раз.');
+        }
+
+        return ctx.reply(error.message || 'Не удалось выполнить вход. Попробуйте позже.');
     }
 }
 
@@ -164,7 +212,7 @@ async function handleRegister(ctx, session, name, email, password) {
     } catch (error) {
         resetState(session);
         saveSessions();
-        return ctx.reply(error.message || 'Не удалось завершить регистрацию.');
+        return handleApiError(ctx, session, error, 'Не удалось завершить регистрацию.');
     }
 }
 
@@ -221,7 +269,7 @@ async function loadMatchesForRequest(ctx, session, requestId) {
         }
         await sendRecommendation(ctx, session);
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось загрузить рекомендации.');
+        await handleApiError(ctx, session, error, 'Не удалось загрузить рекомендации.');
     }
 }
 
@@ -238,7 +286,7 @@ async function chooseRequestForMatches(ctx, session) {
         ]);
         await ctx.reply('Выберите запрос, для которого хотите посмотреть рекомендации:', Markup.inlineKeyboard(keyboard));
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось получить ваши запросы.');
+        await handleApiError(ctx, session, error, 'Не удалось получить ваши запросы.');
     }
 }
 
@@ -267,7 +315,7 @@ async function loadRequests(ctx, session) {
             await ctx.reply(text, kb);
         }
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось получить список запросов.');
+        await handleApiError(ctx, session, error, 'Не удалось получить список запросов.');
     }
 }
 
@@ -282,7 +330,7 @@ async function loadChats(ctx, session) {
         const keyboard = chatList.map((c) => [Markup.button.callback(c.title || c.name || `Чат ${c.id}`, `chat:open:${c.id}`)]);
         await ctx.reply('Ваши чаты:', Markup.inlineKeyboard(keyboard));
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось загрузить чаты.');
+        await handleApiError(ctx, session, error, 'Не удалось загрузить чаты.');
     }
 }
 
@@ -306,7 +354,7 @@ async function showChat(ctx, session, chatId) {
             [Markup.button.callback('⬅️ В меню', 'menu:main')],
         ]));
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось открыть чат.');
+        await handleApiError(ctx, session, error, 'Не удалось открыть чат.');
     }
 }
 
@@ -320,7 +368,7 @@ async function startChatWithUser(ctx, session, userId) {
         await ctx.reply('Запрос на чат отправлен или чат создан. Показываю список чатов.');
         await loadChats(ctx, session);
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось начать чат.');
+        await handleApiError(ctx, session, error, 'Не удалось начать чат.');
     }
 }
 
@@ -329,7 +377,7 @@ async function sendMessageToChat(ctx, session, text) {
         await apiRequest('post', API_ROUTES.CHAT_SEND_MESSAGE(session.currentChatId), { content: text }, session.token);
         await ctx.reply('Сообщение отправлено.');
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось отправить сообщение.');
+        await handleApiError(ctx, session, error, 'Не удалось отправить сообщение.');
     }
 }
 
