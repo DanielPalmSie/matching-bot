@@ -3,9 +3,10 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { API_ROUTES } from './config/apiRoutes.js';
 
 const botToken = process.env.BOT_TOKEN;
-const apiUrl = process.env.API_URL || 'https://matchinghub.work/api';
+const apiUrl = process.env.API_URL || 'https://matchinghub.work';
 
 if (!botToken) {
     console.error('BOT_TOKEN is not set');
@@ -58,34 +59,51 @@ function resetState(session) {
     session.currentChatId = null;
 }
 
+function buildApiUrl(pathname) {
+    const base = apiUrl.replace(/\/+$/, '');
+    if (!pathname) return base;
+    const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
+    if (base.endsWith('/api') && normalizedPath.startsWith('/api')) {
+        return `${base}${normalizedPath.replace(/^\/api/, '')}`;
+    }
+    return `${base}${normalizedPath}`;
+}
+
 function getFriendlyError(error) {
     if (error.response) {
+        console.error('API error status:', error.response.status);
+        console.error('API error response:', error.response.data);
         if (error.response.status === 401 || error.response.status === 403) {
             return 'Неверный логин или пароль. Попробуйте ещё раз.';
         }
-        if (error.response.data) {
-            if (typeof error.response.data === 'string') return error.response.data;
-            if (error.response.data.message) return error.response.data.message;
-            if (error.response.data.error) return error.response.data.error;
-            if (error.response.data.violations) {
-                return error.response.data.violations
-                    .map((v) => `${v.propertyPath}: ${v.message}`)
-                    .join('\n');
+        if (typeof error.response.data === 'string') {
+            if (error.response.data.toLowerCase().includes('<html')) {
+                return '❌ Произошла ошибка на сервере. Попробуйте позже.';
             }
+            return error.response.data;
+        }
+        if (error.response.data?.message) return error.response.data.message;
+        if (error.response.data?.error) return error.response.data.error;
+        if (error.response.data?.violations) {
+            return error.response.data.violations
+                .map((v) => `${v.propertyPath}: ${v.message}`)
+                .join('\n');
         }
         return `Ошибка ${error.response.status}: попробуйте позже.`;
     }
     if (error.request) {
+        console.error('API request error:', error.message);
         return 'Не удалось связаться с сервером. Проверьте соединение или попробуйте позже.';
     }
-    return 'Сейчас что-то пошло не так. Попробуйте позже.';
+    console.error('Unexpected API error:', error);
+    return '❌ Произошла ошибка на сервере. Попробуйте позже.';
 }
 
 async function apiRequest(method, url, data, token) {
     try {
         const res = await axios({
             method,
-            url: `${apiUrl}${url}`,
+            url: buildApiUrl(url),
             data,
             headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             timeout: 10000,
@@ -121,7 +139,7 @@ function showMainMenu(ctx) {
 
 async function handleLogin(ctx, session, email, password) {
     try {
-        const data = await apiRequest('post', '/login', { email, password }, null);
+        const data = await apiRequest('post', API_ROUTES.LOGIN, { email, password }, null);
         session.token = data?.token || data?.jwt || null;
         session.refreshToken = data?.refresh_token || null;
         session.backendUserId = data?.user?.id || data?.id || null;
@@ -140,7 +158,7 @@ async function handleRegister(ctx, session, name, email, password) {
     try {
         const payload = { email, password };
         if (name) payload.name = name;
-        await apiRequest('post', '/register', payload, null);
+        await apiRequest('post', API_ROUTES.REGISTER, payload, null);
         await ctx.reply('🎉 Регистрация прошла успешно. Выполняю вход...');
         return handleLogin(ctx, session, email, password);
     } catch (error) {
@@ -170,6 +188,7 @@ async function sendRecommendation(ctx, session) {
         await ctx.reply('Рекомендации закончились.');
         return;
     }
+    const contactUserId = item.userId || item.user?.id || item.ownerId || item.owner?.id;
     const text = [
         `📝 ${item.title || item.name || 'Запрос'}`,
         item.description ? `Описание: ${item.description}` : null,
@@ -179,23 +198,25 @@ async function sendRecommendation(ctx, session) {
         .filter(Boolean)
         .join('\n');
 
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('Хочу связаться', `reco:contact:${item.id}`)],
-        [Markup.button.callback('Следующая', 'reco:next')],
-        [Markup.button.callback('⬅️ В меню', 'menu:main')],
-    ]);
+    const buttons = [[Markup.button.callback('Следующая', 'reco:next')], [Markup.button.callback('⬅️ В меню', 'menu:main')]];
+    if (contactUserId) {
+        buttons.unshift([Markup.button.callback('Хочу связаться', `reco:contact:${contactUserId}`)]);
+    }
+
+    const keyboard = Markup.inlineKeyboard(buttons);
 
     await ctx.reply(text, keyboard);
 }
 
-async function loadRecommendations(ctx, session) {
+async function loadMatchesForRequest(ctx, session, requestId) {
     try {
-        const data = await apiRequest('get', '/requests/recommendations', null, session.token);
+        const data = await apiRequest('get', API_ROUTES.REQUESTS_MATCHES(requestId), null, session.token);
         session.temp.recommendations = Array.isArray(data) ? data : data?.items || [];
         session.temp.recommendationIndex = 0;
+        session.temp.selectedRequestId = requestId;
         saveSessions();
         if (!session.temp.recommendations.length) {
-            await ctx.reply('Пока нет рекомендаций. Попробуйте позже.');
+            await ctx.reply('Пока нет рекомендаций для этого запроса. Попробуйте позже.');
             return;
         }
         await sendRecommendation(ctx, session);
@@ -204,66 +225,55 @@ async function loadRecommendations(ctx, session) {
     }
 }
 
-async function createContactRequest(ctx, session, requestId) {
+async function chooseRequestForMatches(ctx, session) {
     try {
-        await apiRequest('post', `/requests/${requestId}/contact`, {}, session.token);
-        await ctx.reply('Запрос отправлен. Теперь автор карточки может принять или отклонить контакт.');
+        const data = await apiRequest('get', API_ROUTES.REQUESTS_MINE, null, session.token);
+        const myRequests = Array.isArray(data) ? data : data?.items || [];
+        if (!myRequests.length) {
+            await ctx.reply('У вас пока нет запросов. Создайте запрос в приложении и попробуйте снова.');
+            return;
+        }
+        const keyboard = myRequests.map((req) => [
+            Markup.button.callback(req.title || req.name || `Запрос ${req.id}`, `reco:choose:${req.id}`),
+        ]);
+        await ctx.reply('Выберите запрос, для которого хотите посмотреть рекомендации:', Markup.inlineKeyboard(keyboard));
     } catch (error) {
-        await ctx.reply(error.message || 'Не удалось отправить запрос на контакт.');
+        await ctx.reply(error.message || 'Не удалось получить ваши запросы.');
     }
 }
 
 async function loadRequests(ctx, session) {
     try {
-        const incoming = await apiRequest('get', '/requests/incoming', null, session.token);
-        const outgoing = await apiRequest('get', '/requests/outgoing', null, session.token);
+        const data = await apiRequest('get', API_ROUTES.REQUESTS_MINE, null, session.token);
+        const myRequests = Array.isArray(data) ? data : data?.items || [];
 
-        const incomingList = Array.isArray(incoming) ? incoming : incoming?.items || [];
-        const outgoingList = Array.isArray(outgoing) ? outgoing : outgoing?.items || [];
-
-        if (!incomingList.length && !outgoingList.length) {
-            await ctx.reply('Запросов пока нет.');
+        if (!myRequests.length) {
+            await ctx.reply('У вас пока нет запросов.');
             return;
         }
 
-        if (incomingList.length) {
-            await ctx.reply('Входящие запросы:');
-            for (const req of incomingList) {
-                const text = `• ${req.title || req.name || 'Запрос'}${req.from ? ` от ${req.from}` : ''}`;
-                const kb = Markup.inlineKeyboard([
-                    Markup.button.callback('Принять', `req:accept:${req.id}`),
-                    Markup.button.callback('Отклонить', `req:decline:${req.id}`),
-                ]);
-                await ctx.reply(text, kb);
-            }
-        }
-
-        if (outgoingList.length) {
-            await ctx.reply('Исходящие запросы:');
-            for (const req of outgoingList) {
-                const status = req.status || 'ожидание';
-                const text = `• ${req.title || req.name || 'Запрос'} — статус: ${status}`;
-                await ctx.reply(text);
-            }
+        await ctx.reply('Ваши запросы:');
+        for (const req of myRequests) {
+            const text = [
+                `• ${req.title || req.name || 'Запрос'}`,
+                req.description ? `Описание: ${req.description}` : null,
+                req.city ? `Город: ${req.city}` : null,
+            ]
+                .filter(Boolean)
+                .join('\n');
+            const kb = Markup.inlineKeyboard([
+                Markup.button.callback('Показать рекомендации', `req:matches:${req.id}`),
+            ]);
+            await ctx.reply(text, kb);
         }
     } catch (error) {
         await ctx.reply(error.message || 'Не удалось получить список запросов.');
     }
 }
 
-async function decideRequest(ctx, session, requestId, action) {
-    try {
-        await apiRequest('post', `/requests/${requestId}/${action}`, {}, session.token);
-        await ctx.reply('Решение сохранено. Загружаю обновлённые запросы...');
-        await loadRequests(ctx, session);
-    } catch (error) {
-        await ctx.reply(error.message || 'Не удалось обработать запрос.');
-    }
-}
-
 async function loadChats(ctx, session) {
     try {
-        const chats = await apiRequest('get', '/chats', null, session.token);
+        const chats = await apiRequest('get', API_ROUTES.CHATS_LIST, null, session.token);
         const chatList = Array.isArray(chats) ? chats : chats?.items || [];
         if (!chatList.length) {
             await ctx.reply('Чатов пока нет.');
@@ -278,7 +288,7 @@ async function loadChats(ctx, session) {
 
 async function showChat(ctx, session, chatId) {
     try {
-        const messages = await apiRequest('get', `/chats/${chatId}/messages`, null, session.token);
+        const messages = await apiRequest('get', API_ROUTES.CHAT_MESSAGES(chatId), null, session.token);
         const list = Array.isArray(messages) ? messages : messages?.items || [];
         if (!list.length) {
             await ctx.reply('Сообщений пока нет. Напишите что-нибудь!');
@@ -300,9 +310,23 @@ async function showChat(ctx, session, chatId) {
     }
 }
 
+async function startChatWithUser(ctx, session, userId) {
+    if (!userId) {
+        await ctx.reply('Не удалось определить пользователя для контакта.');
+        return;
+    }
+    try {
+        await apiRequest('post', API_ROUTES.CHATS_START(userId), {}, session.token);
+        await ctx.reply('Запрос на чат отправлен или чат создан. Показываю список чатов.');
+        await loadChats(ctx, session);
+    } catch (error) {
+        await ctx.reply(error.message || 'Не удалось начать чат.');
+    }
+}
+
 async function sendMessageToChat(ctx, session, text) {
     try {
-        await apiRequest('post', `/chats/${session.currentChatId}/messages`, { content: text }, session.token);
+        await apiRequest('post', API_ROUTES.CHAT_SEND_MESSAGE(session.currentChatId), { content: text }, session.token);
         await ctx.reply('Сообщение отправлено.');
     } catch (error) {
         await ctx.reply(error.message || 'Не удалось отправить сообщение.');
@@ -321,7 +345,7 @@ bot.command('menu', (ctx) => showMainMenu(ctx));
 
 bot.command('ping', async (ctx) => {
     try {
-        const res = await axios.get(`${apiUrl}/docs`, { timeout: 5000 }).catch(() => null);
+        const res = await axios.get(buildApiUrl('/api/docs'), { timeout: 5000 }).catch(() => null);
         if (res && res.status === 200) {
             await ctx.reply('✅ Бэкенд отвечает! (GET /api/docs)');
         } else {
@@ -360,7 +384,15 @@ bot.action('menu:recommendations', async (ctx) => {
     if (!(await requireAuth(ctx))) return;
     const session = getSession(ctx);
     await ctx.answerCbQuery();
-    await loadRecommendations(ctx, session);
+    await chooseRequestForMatches(ctx, session);
+});
+
+bot.action(/reco:choose:(.+)/, async (ctx) => {
+    if (!(await requireAuth(ctx))) return;
+    const session = getSession(ctx);
+    const requestId = ctx.match[1];
+    await ctx.answerCbQuery();
+    await loadMatchesForRequest(ctx, session, requestId);
 });
 
 bot.action('reco:next', async (ctx) => {
@@ -374,9 +406,9 @@ bot.action('reco:next', async (ctx) => {
 bot.action(/reco:contact:(.+)/, async (ctx) => {
     if (!(await requireAuth(ctx))) return;
     const session = getSession(ctx);
-    const requestId = ctx.match[1];
+    const userId = ctx.match[1];
     await ctx.answerCbQuery();
-    await createContactRequest(ctx, session, requestId);
+    await startChatWithUser(ctx, session, userId);
 });
 
 bot.action('menu:requests', async (ctx) => {
@@ -386,13 +418,12 @@ bot.action('menu:requests', async (ctx) => {
     await loadRequests(ctx, session);
 });
 
-bot.action(/req:(accept|decline):(.+)/, async (ctx) => {
+bot.action(/req:matches:(.+)/, async (ctx) => {
     if (!(await requireAuth(ctx))) return;
-    const action = ctx.match[1];
-    const id = ctx.match[2];
+    const requestId = ctx.match[1];
     const session = getSession(ctx);
     await ctx.answerCbQuery();
-    await decideRequest(ctx, session, id, action === 'accept' ? 'accept' : 'decline');
+    await loadMatchesForRequest(ctx, session, requestId);
 });
 
 bot.action('menu:chats', async (ctx) => {
