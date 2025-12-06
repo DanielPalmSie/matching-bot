@@ -7,7 +7,7 @@ import { API_ROUTES } from './config/apiRoutes.js';
 import { createNotificationServiceFromEnv } from './notifications.js';
 
 const botToken = process.env.BOT_TOKEN;
-const apiUrl = process.env.API_URL || 'https://matchinghub.work';
+const apiUrl = process.env.BACKEND_API_BASE_URL || process.env.API_URL || 'https://matchinghub.work';
 
 if (!botToken) {
     console.error('BOT_TOKEN is not set');
@@ -39,12 +39,6 @@ const sessionStore = fs.existsSync(sessionFile)
 const bot = new Telegraf(botToken);
 let notificationService = null;
 
-function resolveTelegramChatIdByBackendUserId(backendUserId) {
-    if (!backendUserId) return null;
-    const entry = Object.entries(sessionStore).find(([, session]) => Number(session.backendUserId) === Number(backendUserId));
-    return entry ? entry[0] : null;
-}
-
 function saveSessions() {
     fs.writeFileSync(sessionFile, JSON.stringify(sessionStore, null, 2));
 }
@@ -70,18 +64,24 @@ function getSession(ctx) {
     return sessionStore[tgId];
 }
 
-function resetState(session) {
+function resetState(session, telegramChatId = null) {
     session.state = null;
     session.temp = {};
     session.currentChatId = null;
+    if (telegramChatId && notificationService) {
+        notificationService.leaveChatMode(telegramChatId);
+    }
 }
 
-function clearAuth(session) {
+function clearAuth(session, telegramChatId = null) {
     session.token = null;
     session.refreshToken = null;
     session.backendUserId = null;
-    resetState(session);
+    resetState(session, telegramChatId);
     saveSessions();
+    if (telegramChatId && notificationService) {
+        notificationService.clearTelegramChat(telegramChatId);
+    }
 }
 
 function buildApiUrl(pathname) {
@@ -159,7 +159,7 @@ async function apiRequest(method, url, data, token) {
 
 async function handleApiError(ctx, session, error, fallbackMessage) {
     if (error instanceof ApiError && error.isAuthError) {
-        clearAuth(session);
+        clearAuth(session, ctx.chat?.id);
         await ctx.reply('⚠️ Сессия истекла или недействительна. Пожалуйста, войдите ещё раз через кнопку «Войти» или команду /start.');
         return;
     }
@@ -184,7 +184,7 @@ function showAuthMenu(ctx) {
 
 function showMainMenu(ctx) {
     const session = getSession(ctx);
-    resetState(session);
+    resetState(session, ctx.chat?.id);
     saveSessions();
     return ctx.reply('Главное меню', mainMenuKeyboard);
 }
@@ -195,12 +195,15 @@ async function handleLogin(ctx, session, email, password) {
         session.token = data?.token || data?.jwt || null;
         session.refreshToken = data?.refresh_token || null;
         session.backendUserId = data?.user?.id || data?.id || null;
-        resetState(session);
+        resetState(session, ctx.chat?.id);
         saveSessions();
+        if (notificationService && ctx.chat?.id) {
+            notificationService.setBackendUserId(ctx.chat.id, session.backendUserId);
+        }
         await ctx.reply('✅ Успешный вход.');
         return showMainMenu(ctx);
     } catch (error) {
-        resetState(session);
+        resetState(session, ctx.chat?.id);
         saveSessions();
         if (error instanceof ApiError && error.status === 401) {
             return ctx.reply('Неверный логин или пароль. Попробуйте ещё раз.');
@@ -218,7 +221,7 @@ async function handleRegister(ctx, session, name, email, password) {
         await ctx.reply('🎉 Регистрация прошла успешно. Выполняю вход...');
         return handleLogin(ctx, session, email, password);
     } catch (error) {
-        resetState(session);
+        resetState(session, ctx.chat?.id);
         saveSessions();
         return handleApiError(ctx, session, error, 'Не удалось завершить регистрацию.');
     }
@@ -358,6 +361,9 @@ async function showChat(ctx, session, chatId) {
         session.state = 'chatting';
         session.currentChatId = chatId;
         saveSessions();
+        if (notificationService && ctx.chat?.id) {
+            notificationService.enterChatMode(ctx.chat.id, session.backendUserId, chatId);
+        }
         await ctx.reply('Вы в режиме чата. Напишите сообщение или нажмите кнопку для выхода.', Markup.inlineKeyboard([
             [Markup.button.callback('⬅️ В меню', 'menu:main')],
         ]));
@@ -553,7 +559,7 @@ bot.catch((err, ctx) => {
 
 bot.launch().then(() => {
     console.log('Matching bot started');
-    notificationService = createNotificationServiceFromEnv(bot, resolveTelegramChatIdByBackendUserId);
+    notificationService = createNotificationServiceFromEnv(bot);
 });
 
 process.once('SIGINT', () => {
