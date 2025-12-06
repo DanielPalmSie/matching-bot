@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { API_ROUTES } from './config/apiRoutes.js';
+import { createNotificationServiceFromEnv } from './notifications.js';
 
 const botToken = process.env.BOT_TOKEN;
 const apiUrl = process.env.API_URL || 'https://matchinghub.work';
@@ -36,6 +37,13 @@ const sessionStore = fs.existsSync(sessionFile)
     : {};
 
 const bot = new Telegraf(botToken);
+let notificationService = null;
+
+function resolveTelegramChatIdByBackendUserId(backendUserId) {
+    if (!backendUserId) return null;
+    const entry = Object.entries(sessionStore).find(([, session]) => Number(session.backendUserId) === Number(backendUserId));
+    return entry ? entry[0] : null;
+}
 
 function saveSessions() {
     fs.writeFileSync(sessionFile, JSON.stringify(sessionStore, null, 2));
@@ -545,7 +553,14 @@ bot.catch((err, ctx) => {
 
 bot.launch().then(() => {
     console.log('Matching bot started');
+    notificationService = createNotificationServiceFromEnv(bot, resolveTelegramChatIdByBackendUserId);
 });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    if (notificationService) notificationService.stop();
+    bot.stop('SIGINT');
+});
+process.once('SIGTERM', () => {
+    if (notificationService) notificationService.stop();
+    bot.stop('SIGTERM');
+});

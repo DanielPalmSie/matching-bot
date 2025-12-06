@@ -14,6 +14,7 @@ export const API_ROUTES = {
     CHAT_MESSAGES: (chatId) => `/api/chats/${chatId}/messages`,
     CHAT_SEND_MESSAGE: (chatId) => `/api/chats/${chatId}/messages`,
     CHAT_MARK_READ: (chatId, messageId) => `/api/chats/${chatId}/messages/${messageId}/read`,
+    CHAT_PARTICIPANTS: (chatId) => `/api/chats/${chatId}/participants`,
     FEEDBACK_APP: '/api/feedback/app',
     FEEDBACK_MATCH: '/api/feedback/match',
 };
