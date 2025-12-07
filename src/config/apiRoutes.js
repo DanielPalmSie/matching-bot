@@ -2,6 +2,7 @@ export const API_ROUTES = {
     LOGIN: '/api/login',
     REFRESH: '/api/token/refresh',
     REGISTER: '/api/register',
+    MAGIC_LINK_REQUEST: '/api/auth/magic-link/request',
     ME: '/api/me',
     USERS_CREATE: '/api/users',
     USERS_GET: (id) => `/api/users/${id}`,

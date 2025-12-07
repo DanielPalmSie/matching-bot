@@ -141,6 +141,10 @@ function normalizeApiError(error) {
     };
 }
 
+function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 async function apiRequest(method, url, data, token) {
     try {
         const res = await axios({
@@ -189,41 +193,19 @@ function showMainMenu(ctx) {
     return ctx.reply('Главное меню', mainMenuKeyboard);
 }
 
-async function handleLogin(ctx, session, email, password) {
+async function requestMagicLink(ctx, session, email, name = '') {
     try {
-        const data = await apiRequest('post', API_ROUTES.LOGIN, { email, password }, null);
-        session.token = data?.token || data?.jwt || null;
-        session.refreshToken = data?.refresh_token || null;
-        session.backendUserId = data?.user?.id || data?.id || null;
+        await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, { email, name: name || '' }, null);
         resetState(session, ctx.chat?.id);
         saveSessions();
-        if (notificationService && ctx.chat?.id) {
-            notificationService.setBackendUserId(ctx.chat.id, session.backendUserId);
-        }
-        await ctx.reply('✅ Успешный вход.');
-        return showMainMenu(ctx);
+        await ctx.reply(
+            '✅ Мы отправили на ваш email ссылку для входа.\n' +
+            'Пожалуйста, откройте письмо и нажмите на ссылку, чтобы подтвердить свою почту и войти в систему.\n' +
+            'Если письма нет, проверьте папку “Спам”.'
+        );
     } catch (error) {
-        resetState(session, ctx.chat?.id);
-        saveSessions();
-        if (error instanceof ApiError && error.status === 401) {
-            return ctx.reply('Неверный логин или пароль. Попробуйте ещё раз.');
-        }
-
-        return ctx.reply(error.message || 'Не удалось выполнить вход. Попробуйте позже.');
-    }
-}
-
-async function handleRegister(ctx, session, name, email, password) {
-    try {
-        const payload = { email, password };
-        if (name) payload.name = name;
-        await apiRequest('post', API_ROUTES.REGISTER, payload, null);
-        await ctx.reply('🎉 Регистрация прошла успешно. Выполняю вход...');
-        return handleLogin(ctx, session, email, password);
-    } catch (error) {
-        resetState(session, ctx.chat?.id);
-        saveSessions();
-        return handleApiError(ctx, session, error, 'Не удалось завершить регистрацию.');
+        const message = error.message || 'Не удалось отправить ссылку. Попробуйте ещё раз или проверьте адрес.';
+        await ctx.reply(`❌ ${message}\nВы можете ввести другой email или отменить действие командой /start.`);
     }
 }
 
@@ -508,17 +490,12 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text;
 
     if (session.state === 'login_email') {
-        session.temp.email = text.trim();
-        session.state = 'login_password';
-        saveSessions();
-        await ctx.reply('Введите пароль:');
-        return;
-    }
-
-    if (session.state === 'login_password') {
-        const email = session.temp.email;
-        const password = text.trim();
-        await handleLogin(ctx, session, email, password);
+        const email = text.trim();
+        if (!isValidEmail(email)) {
+            await ctx.reply('Пожалуйста, введите корректный email.');
+            return;
+        }
+        await requestMagicLink(ctx, session, email);
         return;
     }
 
@@ -531,17 +508,13 @@ bot.on('text', async (ctx) => {
     }
 
     if (session.state === 'register_email') {
-        session.temp.email = text.trim();
-        session.state = 'register_password';
-        saveSessions();
-        await ctx.reply('Введите пароль:');
-        return;
-    }
-
-    if (session.state === 'register_password') {
-        const { name, email } = session.temp;
-        const password = text.trim();
-        await handleRegister(ctx, session, name, email, password);
+        const email = text.trim();
+        if (!isValidEmail(email)) {
+            await ctx.reply('Пожалуйста, введите корректный email.');
+            return;
+        }
+        const name = session.temp.name || '';
+        await requestMagicLink(ctx, session, email, name);
         return;
     }
 
