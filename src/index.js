@@ -24,12 +24,8 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const defaultSession = {
-    token: null,
-    refreshToken: null,
-    backendUserId: null,
     state: null,
     temp: {},
-    currentChatId: null,
     lastEmail: null,
 };
 
@@ -65,24 +61,9 @@ function getSession(ctx) {
     return sessionStore[tgId];
 }
 
-function resetState(session, telegramChatId = null) {
+function resetState(session) {
     session.state = null;
     session.temp = {};
-    session.currentChatId = null;
-    if (telegramChatId && notificationService) {
-        notificationService.leaveChatMode(telegramChatId);
-    }
-}
-
-function clearAuth(session, telegramChatId = null) {
-    session.token = null;
-    session.refreshToken = null;
-    session.backendUserId = null;
-    resetState(session, telegramChatId);
-    saveSessions();
-    if (telegramChatId && notificationService) {
-        notificationService.clearTelegramChat(telegramChatId);
-    }
 }
 
 function buildApiUrl(pathname) {
@@ -163,133 +144,35 @@ async function apiRequest(method, url, data, token) {
 }
 
 async function handleApiError(ctx, session, error, fallbackMessage) {
-    if (error instanceof ApiError && error.isAuthError) {
-        clearAuth(session, ctx.chat?.id);
-        await ctx.reply('⚠️ Сессия истекла или недействительна. Пожалуйста, войдите ещё раз через кнопку «Войти» или команду /start.');
-        return;
-    }
     await ctx.reply(error.message || fallbackMessage);
 }
 
-const mainMenuKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🔍 Найти запросы', 'menu:recommendations')],
-    [Markup.button.callback('📨 Мои запросы', 'menu:requests')],
-    [Markup.button.callback('💬 Мои чаты', 'menu:chats')],
-]);
+const SUCCESS_MAGIC_LINK_MESSAGE = 'Мы отправили вам письмо со ссылкой для входа.\nПроверьте вашу почту и нажмите на ссылку, чтобы войти.';
 
-function showAuthMenu(ctx) {
-    return ctx.reply(
-        'Привет! Я matching-бот 🤝\nВыберите действие, чтобы продолжить: войти или зарегистрироваться.',
-        Markup.inlineKeyboard([
-            [Markup.button.callback('Войти', 'auth:login')],
-            [Markup.button.callback('Зарегистрироваться', 'auth:register')],
-        ])
-    );
-}
-
-function showMainMenu(ctx) {
-    const session = getSession(ctx);
-    resetState(session, ctx.chat?.id);
-    saveSessions();
-    return ctx.reply('Главное меню', mainMenuKeyboard);
-}
-
-async function registerUser(ctx, session, { email, password }) {
+async function requestMagicLink(ctx, session, email) {
+    const name = ctx.from?.first_name || ctx.from?.username || undefined;
     try {
-        const payload = { email, password };
-        const guessedName = ctx.from?.first_name || ctx.from?.username;
-        if (guessedName) {
-            payload.name = guessedName;
-        }
-
-        await apiRequest('post', API_ROUTES.REGISTER, payload, null);
-
+        await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, { email, name }, null);
         session.lastEmail = email;
-        session.state = 'await_confirmation';
-        session.temp = {};
+        resetState(session);
         saveSessions();
-
-        const confirmationKeyboard = Markup.inlineKeyboard([
-            [Markup.button.callback('Я подтвердил почту', 'auth:confirmed')],
-        ]);
-
-        await ctx.reply(
-            '✅ Мы отправили письмо с подтверждением на указанную почту.\n' +
-            'Пожалуйста, перейдите по ссылке из письма, чтобы активировать аккаунт.\n' +
-            'После этого вернитесь в Telegram и нажмите «Я подтвердил почту», чтобы войти.',
-            confirmationKeyboard
-        );
+        await ctx.reply(SUCCESS_MAGIC_LINK_MESSAGE);
     } catch (error) {
-        const safeMessage = error.message || 'Не удалось завершить регистрацию. Попробуйте ещё раз позже.';
-        console.error('Registration failed', { status: error.status, message: safeMessage });
-        await ctx.reply(`❌ ${safeMessage}`);
-    }
-}
-
-async function fetchCurrentUser(session, chatId) {
-    if (!session.token) return;
-    try {
-        const me = await apiRequest('get', API_ROUTES.ME, null, session.token);
-        session.backendUserId = me?.id || me?.userId || session.backendUserId;
-        saveSessions();
-        if (chatId && notificationService) {
-            notificationService.setBackendUserId(chatId, session.backendUserId);
-        }
-    } catch (error) {
-        console.error('Failed to load profile after login', { status: error.status, message: error.message });
-    }
-}
-
-async function loginUser(ctx, session, email, password) {
-    try {
-        const data = await apiRequest('post', API_ROUTES.LOGIN, { email, password }, null);
-        const token = data?.token || data?.accessToken || data?.token?.token;
-        const refreshToken = data?.refreshToken || data?.refresh_token || data?.token?.refreshToken || null;
-        const backendUserId = data?.user?.id || data?.userId || null;
-
-        if (!token) {
-            throw new ApiError('Не удалось получить токен. Попробуйте позже.');
-        }
-
-        session.token = token;
-        session.refreshToken = refreshToken;
-        session.backendUserId = backendUserId;
-        session.lastEmail = email;
-        resetState(session, ctx.chat?.id);
-        saveSessions();
-
-        if (ctx.chat?.id && notificationService) {
-            notificationService.setBackendUserId(ctx.chat.id, session.backendUserId);
-        }
-
-        await fetchCurrentUser(session, ctx.chat?.id);
-
-        await ctx.reply('✅ Вход выполнен. Добро пожаловать!');
-        await showMainMenu(ctx);
-    } catch (error) {
-        if (error instanceof ApiError && (error.status === 400 || error.status === 401)) {
-            const messageLower = (error.message || '').toLowerCase();
-            if (messageLower.includes('confirm') || messageLower.includes('verify') || messageLower.includes('подтверд')) {
-                await ctx.reply('Ваш email ещё не подтверждён. Пожалуйста, перейдите по ссылке в письме и попробуйте снова.');
-                return;
-            }
-            await ctx.reply('Неверный email или пароль. Попробуйте снова.');
+        if (error instanceof ApiError && error.status === 400) {
+            await ctx.reply('Введите корректный email.');
             return;
         }
-
-        const fallback = 'Сервис временно недоступен. Попробуйте позже.';
-        console.error('Login failed', { status: error.status, message: error.message });
-        await handleApiError(ctx, session, error, fallback);
+        if (error instanceof ApiError && error.status === 500) {
+            await ctx.reply('Не удалось отправить письмо. Попробуйте позже.');
+            return;
+        }
+        await ctx.reply('Не удалось связаться с сервером. Попробуйте позже.');
     }
 }
 
 async function requireAuth(ctx) {
-    const session = getSession(ctx);
-    if (!session.token) {
-        await ctx.reply('Сначала войдите или зарегистрируйтесь.');
-        return false;
-    }
-    return true;
+    await ctx.reply('Сначала перейдите по ссылке из письма для входа через веб-интерфейс.');
+    return false;
 }
 
 async function sendRecommendation(ctx, session) {
@@ -453,21 +336,11 @@ async function sendMessageToChat(ctx, session, text) {
 
 bot.start((ctx) => {
     const session = getSession(ctx);
-    if (session.token) {
-        return showMainMenu(ctx);
-    }
-    return showAuthMenu(ctx);
-});
-
-bot.command('menu', (ctx) => showMainMenu(ctx));
-
-bot.command('confirmed', async (ctx) => {
-    const session = getSession(ctx);
-    session.state = 'login_email';
+    session.state = 'awaiting_email';
     session.temp = {};
     saveSessions();
-    const hint = session.lastEmail ? `\n(Используйте тот же email: ${session.lastEmail})` : '';
-    await ctx.reply(`Отлично! Введите email для входа:${hint}`);
+    const hint = session.lastEmail ? `\n(Последний использованный email: ${session.lastEmail})` : '';
+    return ctx.reply(`Введите ваш email для входа.${hint}`);
 });
 
 bot.command('ping', async (ctx) => {
@@ -484,178 +357,25 @@ bot.command('ping', async (ctx) => {
     }
 });
 
-bot.action('auth:login', async (ctx) => {
-    const session = getSession(ctx);
-    session.state = 'login_email';
-    session.temp = {};
-    saveSessions();
-    await ctx.answerCbQuery();
-    const hint = session.lastEmail ? `\n(Последний использованный email: ${session.lastEmail})` : '';
-    await ctx.reply(`Введите email для входа:${hint}`);
-});
-
-bot.action('auth:register', async (ctx) => {
-    const session = getSession(ctx);
-    session.state = 'register_email';
-    session.temp = {};
-    saveSessions();
-    await ctx.answerCbQuery();
-    await ctx.reply('Введите email для регистрации:');
-});
-
-bot.action('auth:confirmed', async (ctx) => {
-    const session = getSession(ctx);
-    session.state = 'login_email';
-    session.temp = {};
-    saveSessions();
-    await ctx.answerCbQuery();
-    const hint = session.lastEmail ? `\n(Используйте тот же email: ${session.lastEmail})` : '';
-    await ctx.reply(`Отлично! Давайте войдём. Введите email:${hint}`);
-});
-
-bot.action('menu:main', async (ctx) => {
-    await ctx.answerCbQuery();
-    return showMainMenu(ctx);
-});
-
-bot.action('menu:recommendations', async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const session = getSession(ctx);
-    await ctx.answerCbQuery();
-    await chooseRequestForMatches(ctx, session);
-});
-
-bot.action(/reco:choose:(.+)/, async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const session = getSession(ctx);
-    const requestId = ctx.match[1];
-    await ctx.answerCbQuery();
-    await loadMatchesForRequest(ctx, session, requestId);
-});
-
-bot.action('reco:next', async (ctx) => {
-    const session = getSession(ctx);
-    session.temp.recommendationIndex = (session.temp.recommendationIndex || 0) + 1;
-    saveSessions();
-    await ctx.answerCbQuery();
-    await sendRecommendation(ctx, session);
-});
-
-bot.action(/reco:contact:(.+)/, async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const session = getSession(ctx);
-    const userId = ctx.match[1];
-    await ctx.answerCbQuery();
-    await startChatWithUser(ctx, session, userId);
-});
-
-bot.action('menu:requests', async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const session = getSession(ctx);
-    await ctx.answerCbQuery();
-    await loadRequests(ctx, session);
-});
-
-bot.action(/req:matches:(.+)/, async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const requestId = ctx.match[1];
-    const session = getSession(ctx);
-    await ctx.answerCbQuery();
-    await loadMatchesForRequest(ctx, session, requestId);
-});
-
-bot.action('menu:chats', async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const session = getSession(ctx);
-    await ctx.answerCbQuery();
-    await loadChats(ctx, session);
-});
-
-bot.action(/chat:open:(.+)/, async (ctx) => {
-    if (!(await requireAuth(ctx))) return;
-    const chatId = ctx.match[1];
-    const session = getSession(ctx);
-    await ctx.answerCbQuery();
-    await showChat(ctx, session, chatId);
-});
-
 bot.on('text', async (ctx) => {
     const session = getSession(ctx);
-    const text = ctx.message.text;
+    const text = ctx.message.text.trim();
 
-    if (session.state === 'login_email') {
-        const email = text.trim();
-        if (!isValidEmail(email)) {
+    if (!session.state) {
+        session.state = 'awaiting_email';
+        saveSessions();
+    }
+
+    if (session.state === 'awaiting_email') {
+        if (!isValidEmail(text)) {
             await ctx.reply('Пожалуйста, введите корректный email.');
             return;
         }
-        session.temp.email = email;
-        session.lastEmail = email;
-        session.state = 'login_password';
-        saveSessions();
-        await ctx.reply('Введите пароль:');
+        await requestMagicLink(ctx, session, text);
         return;
     }
 
-    if (session.state === 'login_password') {
-        const password = text.trim();
-        const email = session.temp.email;
-        if (!email) {
-            session.state = 'login_email';
-            saveSessions();
-            await ctx.reply('Сначала введите email.');
-            return;
-        }
-        if (password.length < 6) {
-            await ctx.reply('Пароль должен содержать не менее 6 символов.');
-            return;
-        }
-        await loginUser(ctx, session, email, password);
-        return;
-    }
-
-    if (session.state === 'register_email' || session.state === 'register_name') {
-        const email = text.trim();
-        if (!isValidEmail(email)) {
-            await ctx.reply('Пожалуйста, введите корректный email.');
-            return;
-        }
-        session.temp.email = email;
-        session.lastEmail = email;
-        session.state = 'register_password';
-        saveSessions();
-        await ctx.reply('Введите пароль для регистрации (минимум 6 символов):');
-        return;
-    }
-
-    if (session.state === 'register_password') {
-        const password = text.trim();
-        const email = session.temp.email;
-        if (!email) {
-            session.state = 'register_email';
-            saveSessions();
-            await ctx.reply('Сначала укажите email.');
-            return;
-        }
-        if (password.length < 6) {
-            await ctx.reply('Пароль должен содержать не менее 6 символов.');
-            return;
-        }
-        await registerUser(ctx, session, { email, password });
-        return;
-    }
-
-    if (session.state === 'await_confirmation') {
-        await ctx.reply('После подтверждения email нажмите кнопку «Я подтвердил почту» или команду /confirmed.');
-        return;
-    }
-
-    if (session.state === 'chatting' && session.currentChatId) {
-        await sendMessageToChat(ctx, session, text);
-        return;
-    }
-
-    await ctx.reply('Я не понял команду. Используйте /menu для возврата в главное меню.');
+    await ctx.reply('Отправьте ваш email, чтобы получить ссылку для входа.');
 });
 
 bot.catch((err, ctx) => {
@@ -675,4 +395,3 @@ process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
     bot.stop('SIGTERM');
 });
-//
