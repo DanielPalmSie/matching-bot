@@ -395,3 +395,4 @@ process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
     bot.stop('SIGTERM');
 });
+//
