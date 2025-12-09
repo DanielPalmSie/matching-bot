@@ -5,9 +5,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { API_ROUTES } from './config/apiRoutes.js';
 import { createNotificationServiceFromEnv } from './notifications.js';
+import LoginMercureSubscriber from './mercure/loginSubscriber.js';
+import {
+    clearPendingMagicLink,
+    getLoggedIn,
+    setLoggedIn,
+    setPendingMagicLink,
+} from './auth/loginState.js';
 
 const botToken = process.env.BOT_TOKEN;
 const apiUrl = process.env.API_BASE_URL || process.env.BACKEND_API_BASE_URL || process.env.API_URL || 'https://matchinghub.work';
+const mercureHubUrl = process.env.MERCURE_HUB_URL || 'https://matchinghub.work/.well-known/mercure';
+const mercureJwt = process.env.MERCURE_SUBSCRIBER_JWT || process.env.MERCURE_JWT;
 
 if (!botToken) {
     console.error('BOT_TOKEN is not set');
@@ -35,6 +44,7 @@ const sessionStore = fs.existsSync(sessionFile)
 
 const bot = new Telegraf(botToken);
 let notificationService = null;
+let loginMercureSubscriber = null;
 
 function saveSessions() {
     fs.writeFileSync(sessionFile, JSON.stringify(sessionStore, null, 2));
@@ -59,6 +69,17 @@ function getSession(ctx) {
         saveSessions();
     }
     return sessionStore[tgId];
+}
+
+function getSessionByChatId(chatId) {
+    if (!chatId) {
+        return { ...defaultSession };
+    }
+    if (!sessionStore[chatId]) {
+        sessionStore[chatId] = { ...defaultSession };
+        saveSessions();
+    }
+    return sessionStore[chatId];
 }
 
 function resetState(session) {
@@ -151,28 +172,74 @@ const SUCCESS_MAGIC_LINK_MESSAGE = 'Мы отправили вам письмо 
 
 async function requestMagicLink(ctx, session, email) {
     const name = ctx.from?.first_name || ctx.from?.username || undefined;
+    const chatId = ctx.chat?.id;
     try {
-        await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, { email, name }, null);
+        const payload = {
+            email,
+            name,
+            telegram_chat_id: chatId !== undefined ? String(chatId) : undefined,
+        };
+
+        await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, payload, null);
         session.lastEmail = email;
         resetState(session);
         saveSessions();
+        setPendingMagicLink(chatId, email);
+        if (chatId && loginMercureSubscriber) {
+            loginMercureSubscriber.ensureSubscription(chatId);
+        }
         await ctx.reply(SUCCESS_MAGIC_LINK_MESSAGE);
     } catch (error) {
+        if (
+            error instanceof ApiError &&
+            error.status === 400 &&
+            (error.message || '').toLowerCase().includes('invalid telegram_chat_id')
+        ) {
+            await ctx.reply('Произошла ошибка при связывании с Telegram. Попробуйте ещё раз или обратитесь в поддержку.');
+            return;
+        }
         if (error instanceof ApiError && error.status === 400) {
             await ctx.reply('Введите корректный email.');
             return;
         }
         if (error instanceof ApiError && error.status === 500) {
-            await ctx.reply('Не удалось отправить письмо. Попробуйте позже.');
+            await ctx.reply('Сервер временно недоступен, попробуйте позже.');
             return;
         }
-        await ctx.reply('Не удалось связаться с сервером. Попробуйте позже.');
+        await ctx.reply('Сервер временно недоступен, попробуйте позже.');
     }
 }
 
 async function requireAuth(ctx) {
     await ctx.reply('Сначала перейдите по ссылке из письма для входа через веб-интерфейс.');
     return false;
+}
+
+const MAIN_MENU_KEYBOARD = Markup.inlineKeyboard([
+    [Markup.button.callback('Создать запрос', 'menu:create')],
+    [Markup.button.callback('Мои запросы', 'menu:requests')],
+    [Markup.button.callback('Мои чаты', 'menu:chats')],
+]);
+
+async function sendMainMenu(chatId, userInfo = {}) {
+    if (!chatId) return;
+    const greetingName = userInfo.name || userInfo.email || 'друг';
+    const message = `Добро пожаловать, ${greetingName}!`;
+    await bot.telegram.sendMessage(chatId, message, MAIN_MENU_KEYBOARD);
+}
+
+function ensureLoggedInSession(ctx) {
+    const session = getSession(ctx);
+    const chatId = ctx.chat?.id;
+    const loggedIn = getLoggedIn(chatId);
+    if (!loggedIn) {
+        ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
+        return null;
+    }
+    session.token = loggedIn.jwt;
+    session.backendUserId = loggedIn.userId;
+    saveSessions();
+    return session;
 }
 
 async function sendRecommendation(ctx, session) {
@@ -334,8 +401,33 @@ async function sendMessageToChat(ctx, session, text) {
     }
 }
 
+async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
+    const session = getSessionByChatId(chatId);
+    session.token = jwt || session.token;
+    session.backendUserId = userId || session.backendUserId;
+    session.lastEmail = email || session.lastEmail;
+    resetState(session);
+    saveSessions();
+    setLoggedIn(chatId, { userId, email, jwt });
+    clearPendingMagicLink(chatId);
+    if (notificationService && chatId) {
+        notificationService.setBackendUserId(chatId, userId);
+    }
+
+    const loginMessage = '✅ Вход подтверждён!\nМожем продолжать. Вот ваше меню:';
+    await bot.telegram.sendMessage(chatId, loginMessage);
+    await sendMainMenu(chatId, { email });
+}
+
 bot.start((ctx) => {
     const session = getSession(ctx);
+    const loggedIn = getLoggedIn(ctx.chat?.id);
+    if (loggedIn) {
+        session.token = loggedIn.jwt;
+        session.backendUserId = loggedIn.userId;
+        saveSessions();
+        return sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+    }
     session.state = 'awaiting_email';
     session.temp = {};
     saveSessions();
@@ -361,6 +453,15 @@ bot.on('text', async (ctx) => {
     const session = getSession(ctx);
     const text = ctx.message.text.trim();
 
+    const loggedIn = getLoggedIn(ctx.chat?.id);
+    if (!session.state && loggedIn) {
+        session.token = loggedIn.jwt;
+        session.backendUserId = loggedIn.userId;
+        saveSessions();
+        await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+        return;
+    }
+
     if (!session.state) {
         session.state = 'awaiting_email';
         saveSessions();
@@ -378,8 +479,64 @@ bot.on('text', async (ctx) => {
     await ctx.reply('Отправьте ваш email, чтобы получить ссылку для входа.');
 });
 
+bot.command('menu', async (ctx) => {
+    const loggedIn = getLoggedIn(ctx.chat?.id);
+    if (!loggedIn) {
+        await ctx.reply('Чтобы открыть меню, сначала авторизуйтесь через ссылку из письма.');
+        return;
+    }
+    await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+});
+
+bot.action('menu:main', async (ctx) => {
+    const session = getSession(ctx);
+    session.state = null;
+    session.currentChatId = null;
+    saveSessions();
+    if (notificationService && ctx.chat?.id) {
+        notificationService.leaveChatMode(ctx.chat.id);
+    }
+    const loggedIn = getLoggedIn(ctx.chat?.id);
+    if (!loggedIn) {
+        await ctx.reply('Чтобы открыть меню, сначала авторизуйтесь через ссылку из письма.');
+        return;
+    }
+    await ctx.answerCbQuery();
+    await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+});
+
+bot.action('menu:requests', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = ensureLoggedInSession(ctx);
+    if (!session) return;
+    await loadRequests(ctx, session);
+});
+
+bot.action('menu:chats', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = ensureLoggedInSession(ctx);
+    if (!session) return;
+    await loadChats(ctx, session);
+});
+
+bot.action('menu:create', async (ctx) => {
+    await ctx.answerCbQuery();
+    const loggedIn = getLoggedIn(ctx.chat?.id);
+    if (!loggedIn) {
+        await ctx.reply('Авторизуйтесь через ссылку из письма, чтобы создавать запросы.');
+        return;
+    }
+    await ctx.reply('Создание запросов доступно в веб-приложении. Воспользуйтесь сайтом, затем вернитесь сюда за рекомендациями или чатами.');
+});
+
 bot.catch((err, ctx) => {
     console.error(`Bot error for ${ctx.updateType}`, err);
+});
+
+loginMercureSubscriber = new LoginMercureSubscriber({
+    hubUrl: mercureHubUrl,
+    jwt: mercureJwt,
+    onUserLoggedIn: handleUserLoggedInEvent,
 });
 
 bot.launch().then(() => {
@@ -389,10 +546,12 @@ bot.launch().then(() => {
 
 process.once('SIGINT', () => {
     if (notificationService) notificationService.stop();
+    if (loginMercureSubscriber) loginMercureSubscriber.stop();
     bot.stop('SIGINT');
 });
 process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
+    if (loginMercureSubscriber) loginMercureSubscriber.stop();
     bot.stop('SIGTERM');
 });
 //
