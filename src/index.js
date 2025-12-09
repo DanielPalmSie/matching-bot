@@ -9,6 +9,7 @@ import LoginMercureSubscriber from './mercure/loginSubscriber.js';
 import {
     clearPendingMagicLink,
     getLoggedIn,
+    resetLoginState,
     setLoggedIn,
     setPendingMagicLink,
 } from './auth/loginState.js';
@@ -177,13 +178,21 @@ function isValidEmail(email) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function buildAuthHeaders(token) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) {
+        headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+}
+
 async function apiRequest(method, url, data, token) {
     try {
         const res = await axios({
             method,
             url: buildApiUrl(url),
             data,
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            headers: buildAuthHeaders(token),
             timeout: 10000,
         });
         return res.data;
@@ -193,7 +202,21 @@ async function apiRequest(method, url, data, token) {
     }
 }
 
+function clearSessionAuth(session, chatId) {
+    if (!session) return;
+    session.token = null;
+    session.backendUserId = null;
+    saveSessions();
+    resetLoginState(chatId);
+}
+
 async function handleApiError(ctx, session, error, fallbackMessage) {
+    if (error instanceof ApiError && error.isAuthError) {
+        clearSessionAuth(session, ctx.chat?.id);
+        await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
+        return;
+    }
+
     await ctx.reply(error.message || fallbackMessage);
 }
 
@@ -261,14 +284,25 @@ function ensureLoggedInSession(ctx) {
     const session = getSession(ctx);
     const chatId = ctx.chat?.id;
     const loggedIn = getLoggedIn(chatId);
-    if (!loggedIn) {
-        ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
-        return null;
+
+    if (loggedIn?.jwt) {
+        session.token = loggedIn.jwt;
+        session.backendUserId = loggedIn.userId;
+        saveSessions();
+        return session;
     }
-    session.token = loggedIn.jwt;
-    session.backendUserId = loggedIn.userId;
-    saveSessions();
-    return session;
+
+    if (session.token) {
+        setLoggedIn(chatId, {
+            userId: session.backendUserId,
+            email: session.lastEmail,
+            jwt: session.token,
+        });
+        return session;
+    }
+
+    ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
+    return null;
 }
 
 async function sendRecommendation(ctx, session) {
@@ -452,6 +486,14 @@ bot.start((ctx) => {
         saveSessions();
         return sendMainMenu(ctx.chat.id, { email: loggedIn.email });
     }
+    if (session.token) {
+        setLoggedIn(ctx.chat?.id, {
+            userId: session.backendUserId,
+            email: session.lastEmail,
+            jwt: session.token,
+        });
+        return sendMainMenu(ctx.chat.id, { email: session.lastEmail });
+    }
     session.state = 'awaiting_email';
     session.temp = {};
     saveSessions();
@@ -483,6 +525,15 @@ bot.on('text', async (ctx) => {
         session.backendUserId = loggedIn.userId;
         saveSessions();
         await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+        return;
+    }
+    if (!session.state && session.token) {
+        setLoggedIn(ctx.chat?.id, {
+            userId: session.backendUserId,
+            email: session.lastEmail,
+            jwt: session.token,
+        });
+        await sendMainMenu(ctx.chat.id, { email: session.lastEmail });
         return;
     }
 
