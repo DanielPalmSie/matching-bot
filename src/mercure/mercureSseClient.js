@@ -186,7 +186,12 @@ export class MercureSseClient extends EventEmitter {
     }
 
     dispatchEvent({ payload, topics }) {
-        const topicList = topics && topics.length ? topics : this.deriveTopicsFromPayload(payload);
+        let topicList = topics && topics.length ? topics : this.deriveTopicsFromPayload(payload);
+
+        if (!topicList || topicList.length === 0) {
+            topicList = Array.from(this.topics.keys());
+        }
+
         if (!topicList || topicList.length === 0) {
             return;
         }
