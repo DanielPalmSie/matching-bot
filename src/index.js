@@ -82,6 +82,35 @@ function getSessionByChatId(chatId) {
     return sessionStore[chatId];
 }
 
+function saveUserJwt(chatId, jwt, { userId, email } = {}) {
+    const session = getSessionByChatId(chatId);
+    if (jwt) {
+        session.token = jwt;
+    }
+    if (userId) {
+        session.backendUserId = userId;
+    }
+    if (email) {
+        session.lastEmail = email;
+    }
+    saveSessions();
+
+    const existingLoginState = getLoggedIn(chatId) || {};
+    const resolvedUserId = userId ?? existingLoginState.userId ?? session.backendUserId;
+    const resolvedEmail = email ?? existingLoginState.email ?? session.lastEmail;
+    const resolvedJwt = jwt ?? existingLoginState.jwt ?? session.token;
+
+    setLoggedIn(chatId, {
+        userId: resolvedUserId,
+        email: resolvedEmail,
+        jwt: resolvedJwt,
+    });
+
+    if (notificationService && chatId && resolvedUserId) {
+        notificationService.setBackendUserId(chatId, resolvedUserId);
+    }
+}
+
 function resetState(session) {
     session.state = null;
     session.temp = {};
@@ -403,20 +432,15 @@ async function sendMessageToChat(ctx, session, text) {
 
 async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
     const session = getSessionByChatId(chatId);
-    session.token = jwt || session.token;
-    session.backendUserId = userId || session.backendUserId;
-    session.lastEmail = email || session.lastEmail;
+    const effectiveEmail = email || session.lastEmail;
+
+    saveUserJwt(chatId, jwt, { userId, email: effectiveEmail });
     resetState(session);
     saveSessions();
-    setLoggedIn(chatId, { userId, email, jwt });
     clearPendingMagicLink(chatId);
-    if (notificationService && chatId) {
-        notificationService.setBackendUserId(chatId, userId);
-    }
 
-    const loginMessage = '✅ Вход подтверждён!\nМожем продолжать. Вот ваше меню:';
-    await bot.telegram.sendMessage(chatId, loginMessage);
-    await sendMainMenu(chatId, { email });
+    const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
+    await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
 }
 
 bot.start((ctx) => {
