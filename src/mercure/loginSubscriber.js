@@ -11,20 +11,34 @@ export class LoginMercureSubscriber {
         if (!chatId) return;
         const key = String(chatId);
         if (this.subscriptions.has(key)) {
+            console.log('[Mercure] Already subscribed for chatId', key);
             return;
         }
 
         const topic = `/tg/login/${key}`;
+        console.log('[Mercure] Subscribing to topic:', topic);
+
         const unsubscribe = this.mercureClient.subscribe(topic, (payload) => {
+            console.log('[Mercure] Received raw payload for topic', topic, payload);
             this.handlePayload(key, payload);
         });
+
         this.subscriptions.set(key, unsubscribe);
+        console.log('[Mercure] Subscription stored for chatId', key);
     }
 
+
     handlePayload(chatId, payload) {
-        if (!payload || !payload.type) return;
+        console.log('[Mercure] handlePayload called for chatId', chatId, 'payload:', payload);
+
+        if (!payload || !payload.type) {
+            console.log('[Mercure] Invalid payload, skipping');
+            return;
+        }
 
         if (payload.type === 'login_success') {
+            console.log('[Mercure] login_success event received for chatId', chatId);
+
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
                     chatId: String(chatId),
@@ -37,8 +51,11 @@ export class LoginMercureSubscriber {
         }
 
         if (payload.type === 'user_logged_in') {
+            console.log('[Mercure] user_logged_in event received for chatId', chatId);
+
             const payloadChatId = payload.chat_id ?? payload.chatId;
             if (String(payloadChatId) !== String(chatId)) {
+                console.log('[Mercure] ChatId mismatch, skipping');
                 return;
             }
 
