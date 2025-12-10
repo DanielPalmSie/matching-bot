@@ -273,6 +273,8 @@ const MAIN_MENU_KEYBOARD = Markup.inlineKeyboard([
     [Markup.button.callback('Мои чаты', 'menu:chats')],
 ]);
 
+const REQUEST_TYPES = ['mentorship', 'travel', 'dating', 'help', 'other'];
+
 async function sendMainMenu(chatId, userInfo = {}) {
     if (!chatId) return;
     const greetingName = userInfo.name || userInfo.email || 'друг';
@@ -303,6 +305,100 @@ function ensureLoggedInSession(ctx) {
 
     ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
     return null;
+}
+
+function resetCreateRequestState(session) {
+    if (!session) return;
+    session.state = null;
+    if (session.temp) {
+        delete session.temp.createRequest;
+    }
+    session.currentChatId = null;
+    saveSessions();
+}
+
+function getCreateTemp(session) {
+    if (!session.temp) {
+        session.temp = {};
+    }
+    if (!session.temp.createRequest) {
+        session.temp.createRequest = {};
+    }
+    return session.temp.createRequest;
+}
+
+async function startCreateRequestFlow(ctx, session) {
+    if (!session?.token) {
+        await ctx.reply('Не удалось найти вашу активную сессию. Пожалуйста, войдите заново через ссылку-логин.');
+        return;
+    }
+    session.state = 'create:rawText';
+    session.temp.createRequest = {};
+    saveSessions();
+    await ctx.reply(
+        'Опишите ваш запрос одним-двумя предложениями. Например:\n"Ищу наставника по backend на Symfony в Берлине"'
+    );
+}
+
+async function promptTypeSelection(ctx) {
+    const keyboard = Markup.inlineKeyboard(
+        REQUEST_TYPES.map((type) => [Markup.button.callback(type, `create:type:${type}`)])
+    );
+    await ctx.reply('Выберите тип запроса (это короткий ярлык):', keyboard);
+}
+
+async function promptCity(ctx) {
+    await ctx.reply('В каком городе это актуально?\nЕсли хотите пропустить, нажмите /skip.');
+}
+
+async function promptCountry(ctx) {
+    await ctx.reply('Укажите страну (ISO-код, например: DE, ES, RU).\nИли отправьте /skip, чтобы пропустить.');
+}
+
+async function createRequestOnBackend(ctx, session) {
+    const data = getCreateTemp(session);
+    const payload = {
+        rawText: data.rawText,
+        type: data.type,
+        city: data.city ?? null,
+        country: data.country ?? null,
+    };
+
+    try {
+        const res = await apiRequest('post', API_ROUTES.REQUESTS_CREATE, payload, session.token);
+        const successMessage = [
+            'Готово! Ваш запрос создан 🎉',
+            `ID: ${res.id}`,
+            `Тип: ${res.type}`,
+            `Город: ${res.city || 'не указан'}`,
+            `Статус: ${res.status}`,
+            '',
+            'Теперь вы можете вернуться к рекомендациям или чатам.',
+        ].join('\n');
+        resetCreateRequestState(session);
+        await ctx.reply(successMessage, MAIN_MENU_KEYBOARD);
+    } catch (error) {
+        console.error('Create request error:', error);
+        if (error instanceof ApiError && error.status === 400) {
+            await ctx.reply(
+                `Не удалось создать запрос: ${error.message}\nПопробуйте ещё раз позже или измените текст запроса.`,
+                MAIN_MENU_KEYBOARD
+            );
+            resetCreateRequestState(session);
+            return;
+        }
+        if (error instanceof ApiError && error.isAuthError) {
+            clearSessionAuth(session, ctx.chat?.id);
+            resetCreateRequestState(session);
+            await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите заново.', MAIN_MENU_KEYBOARD);
+            return;
+        }
+        await ctx.reply(
+            'Произошла техническая ошибка при создании запроса. Попробуйте ещё раз позже.',
+            MAIN_MENU_KEYBOARD
+        );
+        resetCreateRequestState(session);
+    }
 }
 
 async function sendRecommendation(ctx, session) {
@@ -519,6 +615,74 @@ bot.on('text', async (ctx) => {
     const session = getSession(ctx);
     const text = ctx.message.text.trim();
 
+    if (text === '/cancel' && session.state?.startsWith('create:')) {
+        resetCreateRequestState(session);
+        await ctx.reply('Создание запроса отменено.', MAIN_MENU_KEYBOARD);
+        return;
+    }
+
+    if (session.state === 'create:rawText') {
+        if (!text.trim()) {
+            await ctx.reply('Пожалуйста, опишите ваш запрос хотя бы одним словом.');
+            return;
+        }
+        const data = getCreateTemp(session);
+        data.rawText = text;
+        session.state = 'create:type';
+        saveSessions();
+        await promptTypeSelection(ctx);
+        return;
+    }
+
+    if (session.state === 'create:type-custom') {
+        if (!text || text.length > 50) {
+            await ctx.reply('Название типа должно быть от 1 до 50 символов. Попробуйте снова.');
+            return;
+        }
+        const data = getCreateTemp(session);
+        data.type = text.trim();
+        session.state = 'create:city';
+        saveSessions();
+        await promptCity(ctx);
+        return;
+    }
+
+    if (session.state === 'create:city') {
+        if (text === '/skip') {
+            const data = getCreateTemp(session);
+            data.city = null;
+            session.state = 'create:country';
+            saveSessions();
+            await promptCountry(ctx);
+            return;
+        }
+        const data = getCreateTemp(session);
+        data.city = text.trim().slice(0, 255) || null;
+        session.state = 'create:country';
+        saveSessions();
+        await promptCountry(ctx);
+        return;
+    }
+
+    if (session.state === 'create:country') {
+        if (text === '/skip') {
+            const data = getCreateTemp(session);
+            data.country = null;
+            saveSessions();
+            await createRequestOnBackend(ctx, session);
+            return;
+        }
+        if (!text.trim() || text.trim().length > 3) {
+            await ctx.reply('Введите код страны в формате ISO (2-3 символа), например: DE.');
+            return;
+        }
+        const data = getCreateTemp(session);
+        data.country = text.trim().toUpperCase();
+        saveSessions();
+        await createRequestOnBackend(ctx, session);
+        return;
+    }
+
     const loggedIn = getLoggedIn(ctx.chat?.id);
     if (!session.state && loggedIn) {
         session.token = loggedIn.jwt;
@@ -563,6 +727,15 @@ bot.command('menu', async (ctx) => {
     await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
 });
 
+bot.command('create_request', async (ctx) => {
+    const session = ensureLoggedInSession(ctx);
+    if (!session) {
+        await ctx.reply('Не удалось найти вашу активную сессию. Пожалуйста, войдите заново через ссылку-логин.');
+        return;
+    }
+    await startCreateRequestFlow(ctx, session);
+});
+
 bot.action('menu:main', async (ctx) => {
     const session = getSession(ctx);
     session.state = null;
@@ -596,12 +769,38 @@ bot.action('menu:chats', async (ctx) => {
 
 bot.action('menu:create', async (ctx) => {
     await ctx.answerCbQuery();
-    const loggedIn = getLoggedIn(ctx.chat?.id);
-    if (!loggedIn) {
-        await ctx.reply('Авторизуйтесь через ссылку из письма, чтобы создавать запросы.');
+    const session = ensureLoggedInSession(ctx);
+    if (!session) {
+        await ctx.reply('Не удалось найти вашу активную сессию. Пожалуйста, войдите заново через ссылку-логин.');
         return;
     }
-    await ctx.reply('Создание запросов доступно в веб-приложении. Воспользуйтесь сайтом, затем вернитесь сюда за рекомендациями или чатами.');
+    await startCreateRequestFlow(ctx, session);
+});
+
+bot.action(/create:type:(.+)/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = getSession(ctx);
+    if (session.state !== 'create:type') {
+        return;
+    }
+    const [, typeValue] = ctx.match;
+    if (!REQUEST_TYPES.includes(typeValue)) {
+        await ctx.reply('Неизвестный тип запроса. Попробуйте снова.');
+        return;
+    }
+
+    const data = getCreateTemp(session);
+    if (typeValue === 'other') {
+        session.state = 'create:type-custom';
+        saveSessions();
+        await ctx.reply('Напишите короткое название типа, например: “language_exchange”');
+        return;
+    }
+
+    data.type = typeValue;
+    session.state = 'create:city';
+    saveSessions();
+    await promptCity(ctx);
 });
 
 bot.catch((err, ctx) => {
