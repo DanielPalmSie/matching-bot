@@ -401,51 +401,80 @@ async function createRequestOnBackend(ctx, session) {
     }
 }
 
-async function sendRecommendation(ctx, session) {
-    if (!session.temp.recommendations || session.temp.recommendations.length === 0) {
-        await ctx.reply('Рекомендации закончились. Попробуйте позже.');
-        return;
-    }
-    const idx = session.temp.recommendationIndex || 0;
-    const item = session.temp.recommendations[idx];
-    if (!item) {
-        await ctx.reply('Рекомендации закончились.');
-        return;
-    }
-    const contactUserId = item.userId || item.user?.id || item.ownerId || item.owner?.id;
-    const text = [
-        `📝 ${item.title || item.name || 'Запрос'}`,
-        item.description ? `Описание: ${item.description}` : null,
-        item.category ? `Категория: ${item.category}` : null,
-        item.city ? `Город: ${item.city}` : null,
-    ]
-        .filter(Boolean)
-        .join('\n');
+function formatSimilarity(similarity) {
+    if (similarity === null || similarity === undefined) return '—';
+    const percent = Number(similarity) * 100;
+    return `${percent.toFixed(1)}%`;
+}
 
-    const buttons = [[Markup.button.callback('Следующая', 'reco:next')], [Markup.button.callback('⬅️ В меню', 'menu:main')]];
-    if (contactUserId) {
-        buttons.unshift([Markup.button.callback('Хочу связаться', `reco:contact:${contactUserId}`)]);
-    }
+function formatCreatedAt(createdAt) {
+    if (!createdAt) return '—';
+    const date = new Date(createdAt);
+    if (Number.isNaN(date.getTime())) return createdAt;
+    return date.toLocaleString('ru-RU');
+}
 
-    const keyboard = Markup.inlineKeyboard(buttons);
+function formatMatchMessage(match) {
+    const lines = [
+        '🔎 Рекомендация:',
+        `• Тип: ${match.type ?? '—'}`,
+        `• Город/страна: ${match.city ?? '—'}, ${match.country ?? '—'}`,
+        `• Статус: ${match.status ?? '—'}`,
+        `• Похожесть: ${formatSimilarity(match.similarity)}`,
+        `• Создано: ${formatCreatedAt(match.createdAt)}`,
+    ];
 
-    await ctx.reply(text, keyboard);
+    return lines.join('\n');
+}
+
+async function sendRecommendation(ctx, match) {
+    const keyboard = Markup.inlineKeyboard([[Markup.button.callback('⬅️ В меню', 'menu:main')]]);
+    await ctx.reply(formatMatchMessage(match), keyboard);
 }
 
 async function loadMatchesForRequest(ctx, session, requestId) {
     try {
-        const data = await apiRequest('get', API_ROUTES.REQUESTS_MATCHES(requestId), null, session.token);
-        session.temp.recommendations = Array.isArray(data) ? data : data?.items || [];
-        session.temp.recommendationIndex = 0;
-        session.temp.selectedRequestId = requestId;
-        saveSessions();
-        if (!session.temp.recommendations.length) {
-            await ctx.reply('Пока нет рекомендаций для этого запроса. Попробуйте позже.');
+        const matches = await apiRequest(
+            'get',
+            `${API_ROUTES.REQUESTS_MATCHES(requestId)}?limit=10`,
+            null,
+            session.token
+        );
+
+        const items = Array.isArray(matches) ? matches : matches?.items || [];
+        if (!items.length) {
+            await ctx.reply('Для этого запроса пока нет подходящих рекомендаций.');
             return;
         }
-        await sendRecommendation(ctx, session);
+
+        const limitedMatches = items.slice(0, 5);
+        for (const match of limitedMatches) {
+            await sendRecommendation(ctx, match);
+        }
+
+        if (items.length > limitedMatches.length) {
+            await ctx.reply('Показаны первые рекомендации. Скоро добавим просмотр следующей партии.');
+        }
     } catch (error) {
-        await handleApiError(ctx, session, error, 'Не удалось загрузить рекомендации.');
+        console.error('Failed to load matches', {
+            requestId,
+            status: error?.status,
+            message: error?.message,
+        });
+
+        if (error instanceof ApiError) {
+            if (error.status === 404) {
+                await ctx.reply('Запрос не найден или более не существует.');
+                return;
+            }
+            if (error.isAuthError) {
+                clearSessionAuth(session, ctx.chat?.id);
+                await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите снова через ссылку из письма.');
+                return;
+            }
+        }
+
+        await ctx.reply('Не удалось загрузить рекомендации. Попробуйте позже.');
     }
 }
 
@@ -758,6 +787,20 @@ bot.action('menu:requests', async (ctx) => {
     const session = ensureLoggedInSession(ctx);
     if (!session) return;
     await loadRequests(ctx, session);
+});
+
+bot.action(/^req:matches:(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [, requestId] = ctx.match;
+    const session = ensureLoggedInSession(ctx);
+    if (!session || !session.token) {
+        await ctx.reply(
+            'Не удалось найти вашу активную сессию. Пожалуйста, войдите заново через ссылку для входа.'
+        );
+        return;
+    }
+
+    await loadMatchesForRequest(ctx, session, requestId);
 });
 
 bot.action('menu:chats', async (ctx) => {
