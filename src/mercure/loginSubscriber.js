@@ -20,7 +20,7 @@ export class LoginMercureSubscriber {
 
         const unsubscribe = this.mercureClient.subscribe(topic, (payload) => {
             console.log('[Mercure] Received raw payload for topic', topic, payload);
-            this.handlePayload(key, payload);
+            this.handlePayload(key, payload, topic);
         });
 
         this.subscriptions.set(key, unsubscribe);
@@ -28,7 +28,7 @@ export class LoginMercureSubscriber {
     }
 
 
-    handlePayload(chatId, payload) {
+    handlePayload(chatId, payload, topic) {
         console.log('[Mercure] handlePayload called for chatId', chatId, 'payload:', payload);
 
         if (!payload || !payload.type) {
@@ -44,27 +44,25 @@ export class LoginMercureSubscriber {
         }
 
         if (payload.type === 'login_success') {
-            if (!payloadChatId) {
-                console.log('[Mercure] login_success event missing chat id, skipping');
+            console.log('[Mercure] BOT LOGIN EVENT', { chatId: String(chatId), topic, hasJwt: !!payload.jwt });
+
+            if (!payload.jwt) {
+                console.warn('[Mercure] login_success event without jwt, skipping');
                 return;
             }
 
-            console.log('[Mercure] login_success event received for chatId', chatId);
-            console.log('BOT LOGIN EVENT', {
-                chatId: String(payloadChatId),
-                backendUserId: payload.user_id ?? payload.userId ?? null,
-                email: payload.email ?? null,
-                timestamp: new Date().toISOString(),
-            });
+            console.log('[Mercure] BOT LOGIN STATE UPDATE', { chatId: String(chatId) });
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
-                    chatId: String(payloadChatId),
+                    chatId: String(chatId),
                     jwt: payload.jwt,
                     email: payload.email,
                     userId: payload.user_id ?? payload.userId,
                 });
             }
+
+            console.log('[Mercure] BOT SEND MENU DONE', { chatId: String(chatId) });
             return;
         }
 
