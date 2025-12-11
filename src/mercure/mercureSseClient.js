@@ -44,6 +44,12 @@ export class MercureSseClient extends EventEmitter {
         this.subscriptionHandlers.set(subscriptionId, handler);
         this.subscriptionTopics.set(subscriptionId, topic);
 
+        console.log('BOT SUBSCRIBED', {
+            topics: Array.from(this.topics.keys()),
+            subscriptionId,
+            timestamp: new Date().toISOString(),
+        });
+
         this.ensureConnection();
 
         return () => {
@@ -111,6 +117,11 @@ export class MercureSseClient extends EventEmitter {
 
             this.currentBackoff = this.backoffMs;
             this.reader = response.body.getReader();
+            console.log('BOT SSE CONNECTED', {
+                hubUrl,
+                topics: Array.from(this.topics.keys()),
+                timestamp: new Date().toISOString(),
+            });
             await this.consumeStream();
         } catch (error) {
             if (!this.connectionActive) {
@@ -127,6 +138,12 @@ export class MercureSseClient extends EventEmitter {
         }
         const delay = Math.min(this.currentBackoff, this.maxBackoffMs);
         this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
+        console.log('BOT SSE RECONNECTING', {
+            delayMs: delay,
+            nextBackoffMs: this.currentBackoff,
+            topics: Array.from(this.topics.keys()),
+            timestamp: new Date().toISOString(),
+        });
         setTimeout(() => {
             this.connectionActive = false;
             this.startStream();
@@ -179,6 +196,12 @@ export class MercureSseClient extends EventEmitter {
         const dataString = dataLines.join('\n');
         try {
             const payload = JSON.parse(dataString);
+            console.log('BOT EVENT RECEIVED', {
+                eventType: eventType || payload?.type || null,
+                rawData: dataString,
+                topics,
+                timestamp: new Date().toISOString(),
+            });
             this.dispatchEvent({ payload, topics, eventId, eventType });
         } catch (error) {
             console.warn('Failed to parse Mercure payload', error, dataString);

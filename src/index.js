@@ -544,14 +544,34 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
         }
     }
 
+    console.log('BOT LOGIN STATE UPDATE', {
+        chatId,
+        jwtLength: jwt?.length || 0,
+        backendUserId: resolvedUserId || null,
+        timestamp: new Date().toISOString(),
+    });
     saveUserJwt(chatId, jwt, { userId: resolvedUserId, email: effectiveEmail });
     resetState(session);
     sessionStore.persist();
     sessionStore.clearPendingMagicLink(chatId);
 
     const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
-    console.log('[Auth] Sending main menu to chatId', chatId, 'with email', effectiveEmail);
-    await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
+    console.log('BOT SEND MENU START', { chatId, timestamp: new Date().toISOString() });
+    try {
+        const message = await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
+        console.log('BOT SEND MENU DONE', {
+            chatId,
+            messageId: message?.message_id ?? null,
+            timestamp: new Date().toISOString(),
+        });
+    } catch (error) {
+        console.log('BOT SEND MENU DONE', {
+            chatId,
+            error: error?.message || error,
+            timestamp: new Date().toISOString(),
+        });
+        throw error;
+    }
 }
 
 bot.start((ctx) => {
