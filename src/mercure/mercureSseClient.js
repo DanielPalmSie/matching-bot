@@ -209,8 +209,9 @@ export class MercureSseClient extends EventEmitter {
     }
 
     deriveTopicsFromPayload(payload) {
-        if (payload?.chatId) {
-            return [`/chats/${payload.chatId}`];
+        const chatId = payload?.chatId || payload?.chat_id || payload?.telegram_chat_id;
+        if (chatId) {
+            return [`/tg/login/${chatId}`];
         }
         return [];
     }

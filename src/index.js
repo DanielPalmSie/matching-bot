@@ -530,6 +530,7 @@ async function sendMessageToChat(ctx, session, text) {
 }
 
 async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
+    console.log('[Auth] Received login event for chatId', chatId, 'payload:', { userId, email });
     const session = getSessionByChatId(chatId);
     const effectiveEmail = email || session.lastEmail;
     let resolvedUserId = userId;
@@ -549,6 +550,7 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
     sessionStore.clearPendingMagicLink(chatId);
 
     const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
+    console.log('[Auth] Sending main menu to chatId', chatId, 'with email', effectiveEmail);
     await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
 }
 

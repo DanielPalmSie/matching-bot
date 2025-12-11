@@ -36,12 +36,24 @@ export class LoginMercureSubscriber {
             return;
         }
 
+        const payloadChatId = payload.chat_id ?? payload.chatId ?? payload.telegram_chat_id;
+
+        if (payloadChatId && String(payloadChatId) !== String(chatId)) {
+            console.log('[Mercure] ChatId mismatch for payload; expected', chatId, 'got', payloadChatId, 'skipping');
+            return;
+        }
+
         if (payload.type === 'login_success') {
+            if (!payloadChatId) {
+                console.log('[Mercure] login_success event missing chat id, skipping');
+                return;
+            }
+
             console.log('[Mercure] login_success event received for chatId', chatId);
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
-                    chatId: String(chatId),
+                    chatId: String(payloadChatId),
                     jwt: payload.jwt,
                     email: payload.email,
                     userId: payload.user_id ?? payload.userId,
@@ -53,15 +65,9 @@ export class LoginMercureSubscriber {
         if (payload.type === 'user_logged_in') {
             console.log('[Mercure] user_logged_in event received for chatId', chatId);
 
-            const payloadChatId = payload.chat_id ?? payload.chatId;
-            if (String(payloadChatId) !== String(chatId)) {
-                console.log('[Mercure] ChatId mismatch, skipping');
-                return;
-            }
-
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
-                    chatId: String(chatId),
+                    chatId: String(payloadChatId || chatId),
                     userId: payload.user_id ?? payload.userId,
                     email: payload.email,
                     jwt: payload.jwt,
