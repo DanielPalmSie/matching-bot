@@ -261,7 +261,16 @@ function buildFeedbackCallback(type, match, targetRequestId) {
 }
 
 function parseNullableId(value) {
-    return value === 'null' || value === undefined ? null : value;
+    return value === 'null' || value === undefined || value === '' || value === null ? null : value;
+}
+
+function toNumberOrNull(value) {
+    if (value === null || value === undefined || value === '' || value === 'null') {
+        return null;
+    }
+
+    const numericValue = Number(value);
+    return Number.isNaN(numericValue) ? null : numericValue;
 }
 
 function buildReasonKeyboard(matchId, targetRequestId) {
@@ -308,12 +317,12 @@ function getPendingFeedbackComment(session) {
 
 function buildFeedbackPayload(session, { matchId = null, targetRequestId = null, relevanceScore, reasonCode = null, comment = null }) {
     return {
-        userId: session.backendUserId,
-        matchId: matchId || null,
-        targetRequestId: targetRequestId || null,
-        relevanceScore,
-        reasonCode: reasonCode || null,
-        comment: comment || null,
+        userId: toNumberOrNull(session.backendUserId),
+        matchId: toNumberOrNull(matchId),
+        targetRequestId: toNumberOrNull(targetRequestId),
+        relevanceScore: Number(relevanceScore),
+        reasonCode: reasonCode ?? null,
+        comment: comment ?? null,
         mainIssue: null,
     };
 }
