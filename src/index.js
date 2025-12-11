@@ -476,8 +476,18 @@ async function sendMessageToChat(ctx, session, text) {
 async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
     const session = getSessionByChatId(chatId);
     const effectiveEmail = email || session.lastEmail;
+    let resolvedUserId = userId;
 
-    saveUserJwt(chatId, jwt, { userId, email: effectiveEmail });
+    if (!resolvedUserId && jwt) {
+        try {
+            const profile = await apiRequest('get', API_ROUTES.ME, null, jwt);
+            resolvedUserId = profile?.id;
+        } catch (error) {
+            console.error('Failed to resolve userId after login event', { chatId, error });
+        }
+    }
+
+    saveUserJwt(chatId, jwt, { userId: resolvedUserId, email: effectiveEmail });
     resetState(session);
     sessionStore.persist();
     sessionStore.clearPendingMagicLink(chatId);
