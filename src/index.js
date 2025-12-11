@@ -1,18 +1,12 @@
 import { Telegraf, Markup } from 'telegraf';
 import axios from 'axios';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { API_ROUTES } from './config/apiRoutes.js';
 import { createNotificationServiceFromEnv } from './notifications.js';
 import LoginMercureSubscriber from './mercure/loginSubscriber.js';
-import {
-    clearPendingMagicLink,
-    getLoggedIn,
-    resetLoginState,
-    setLoggedIn,
-    setPendingMagicLink,
-} from './auth/loginState.js';
+import { getLoggedIn, setLoggedIn } from './auth/loginState.js';
+import SessionStore from './services/sessionStore.js';
+import ApiClient, { ApiError } from './services/apiClient.js';
+import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
 
 const botToken = process.env.BOT_TOKEN;
 const apiUrl = process.env.API_BASE_URL || process.env.BACKEND_API_BASE_URL || process.env.API_URL || 'https://matchinghub.work';
@@ -24,190 +18,43 @@ if (!botToken) {
     process.exit(1);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dataDir = path.join(__dirname, '..', 'data');
-const sessionFile = path.join(dataDir, 'sessions.json');
-
-if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const defaultSession = {
-    state: null,
-    temp: {},
-    lastEmail: null,
-};
-
-const sessionStore = fs.existsSync(sessionFile)
-    ? JSON.parse(fs.readFileSync(sessionFile, 'utf8'))
-    : {};
-
+const apiClient = new ApiClient({ baseUrl: apiUrl });
+const sessionStore = new SessionStore();
 const bot = new Telegraf(botToken);
 let notificationService = null;
 let loginMercureSubscriber = null;
 
-function saveSessions() {
-    fs.writeFileSync(sessionFile, JSON.stringify(sessionStore, null, 2));
-}
-
-class ApiError extends Error {
-    constructor(message, status = null, isAuthError = false) {
-        super(message);
-        this.name = 'ApiError';
-        this.status = status;
-        this.isAuthError = isAuthError;
-    }
-}
-
 function getSession(ctx) {
-    const tgId = ctx.from?.id;
-    if (!tgId) {
-        return { ...defaultSession };
-    }
-    if (!sessionStore[tgId]) {
-        sessionStore[tgId] = { ...defaultSession };
-        saveSessions();
-    }
-    return sessionStore[tgId];
+    return sessionStore.getSession(ctx);
 }
 
 function getSessionByChatId(chatId) {
-    if (!chatId) {
-        return { ...defaultSession };
-    }
-    if (!sessionStore[chatId]) {
-        sessionStore[chatId] = { ...defaultSession };
-        saveSessions();
-    }
-    return sessionStore[chatId];
+    return sessionStore.getSessionByChatId(chatId);
 }
 
 function saveUserJwt(chatId, jwt, { userId, email } = {}) {
-    const session = getSessionByChatId(chatId);
-    if (jwt) {
-        session.token = jwt;
-    }
-    if (userId) {
-        session.backendUserId = userId;
-    }
-    if (email) {
-        session.lastEmail = email;
-    }
-    saveSessions();
+    sessionStore.saveUserJwt(chatId, jwt, { userId, email });
 
-    const existingLoginState = getLoggedIn(chatId) || {};
-    const resolvedUserId = userId ?? existingLoginState.userId ?? session.backendUserId;
-    const resolvedEmail = email ?? existingLoginState.email ?? session.lastEmail;
-    const resolvedJwt = jwt ?? existingLoginState.jwt ?? session.token;
-
-    setLoggedIn(chatId, {
-        userId: resolvedUserId,
-        email: resolvedEmail,
-        jwt: resolvedJwt,
-    });
-
-    if (notificationService && chatId && resolvedUserId) {
+    if (notificationService && chatId && (userId || sessionStore.getSessionByChatId(chatId).backendUserId)) {
+        const resolvedUserId = userId ?? sessionStore.getSessionByChatId(chatId).backendUserId;
         notificationService.setBackendUserId(chatId, resolvedUserId);
     }
 }
 
 function resetState(session) {
-    session.state = null;
-    session.temp = {};
-}
-
-function buildApiUrl(pathname) {
-    const base = apiUrl.replace(/\/+$/, '');
-    if (!pathname) return base;
-    const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
-    if (base.endsWith('/api') && normalizedPath.startsWith('/api')) {
-        return `${base}${normalizedPath.replace(/^\/api/, '')}`;
-    }
-    return `${base}${normalizedPath}`;
-}
-
-function normalizeApiError(error) {
-    if (error.response) {
-        const status = error.response.status;
-
-        if (typeof error.response.data === 'string') {
-            const isHtml = error.response.data.toLowerCase().includes('<html');
-            return {
-                message: isHtml ? '❌ Произошла ошибка на сервере. Попробуйте позже.' : error.response.data,
-                status,
-                isAuthError: status === 401 || status === 403,
-            };
-        }
-
-        if (error.response.data?.violations) {
-            return {
-                message: error.response.data.violations
-                    .map((v) => `${v.propertyPath}: ${v.message}`)
-                    .join('\n'),
-                status,
-                isAuthError: status === 401 || status === 403,
-            };
-        }
-
-        return {
-            message: error.response.data?.message ||
-                     error.response.data?.error ||
-                     `Ошибка ${status}: попробуйте позже.`,
-            status,
-            isAuthError: status === 401 || status === 403,
-        };
-    }
-
-    if (error.request) {
-        return {
-            message: 'Не удалось связаться с сервером. Проверьте соединение или попробуйте позже.',
-            status: null,
-            isAuthError: false,
-        };
-    }
-
-    return {
-        message: '❌ Произошла ошибка на сервере. Попробуйте позже.',
-        status: null,
-        isAuthError: false,
-    };
+    sessionStore.resetState(session);
 }
 
 function isValidEmail(email) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function buildAuthHeaders(token) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) {
-        headers.Authorization = `Bearer ${token}`;
-    }
-    return headers;
-}
-
 async function apiRequest(method, url, data, token) {
-    try {
-        const res = await axios({
-            method,
-            url: buildApiUrl(url),
-            data,
-            headers: buildAuthHeaders(token),
-            timeout: 10000,
-        });
-        return res.data;
-    } catch (err) {
-        const norm = normalizeApiError(err);
-        throw new ApiError(norm.message, norm.status, norm.isAuthError);
-    }
+    return apiClient.request(method, url, data, token);
 }
 
 function clearSessionAuth(session, chatId) {
-    if (!session) return;
-    session.token = null;
-    session.backendUserId = null;
-    saveSessions();
-    resetLoginState(chatId);
+    sessionStore.clearSessionAuth(session, chatId);
 }
 
 async function handleApiError(ctx, session, error, fallbackMessage) {
@@ -235,8 +82,8 @@ async function requestMagicLink(ctx, session, email) {
         await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, payload, null);
         session.lastEmail = email;
         resetState(session);
-        saveSessions();
-        setPendingMagicLink(chatId, email);
+        sessionStore.persist();
+        sessionStore.setPendingMagicLink(chatId, email);
         if (chatId && loginMercureSubscriber) {
             loginMercureSubscriber.ensureSubscription(chatId);
         }
@@ -290,7 +137,7 @@ function ensureLoggedInSession(ctx) {
     if (loggedIn?.jwt) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
-        saveSessions();
+        sessionStore.persist();
         return session;
     }
 
@@ -308,23 +155,11 @@ function ensureLoggedInSession(ctx) {
 }
 
 function resetCreateRequestState(session) {
-    if (!session) return;
-    session.state = null;
-    if (session.temp) {
-        delete session.temp.createRequest;
-    }
-    session.currentChatId = null;
-    saveSessions();
+    sessionStore.resetCreateRequestState(session);
 }
 
 function getCreateTemp(session) {
-    if (!session.temp) {
-        session.temp = {};
-    }
-    if (!session.temp.createRequest) {
-        session.temp.createRequest = {};
-    }
-    return session.temp.createRequest;
+    return sessionStore.getCreateTemp(session);
 }
 
 async function startCreateRequestFlow(ctx, session) {
@@ -334,7 +169,7 @@ async function startCreateRequestFlow(ctx, session) {
     }
     session.state = 'create:rawText';
     session.temp.createRequest = {};
-    saveSessions();
+    sessionStore.persist();
     await ctx.reply(
         'Опишите ваш запрос одним-двумя предложениями. Например:\n"Ищу наставника по backend на Symfony в Берлине"'
     );
@@ -399,34 +234,6 @@ async function createRequestOnBackend(ctx, session) {
         );
         resetCreateRequestState(session);
     }
-}
-
-function formatSimilarity(similarity) {
-    if (similarity === null || similarity === undefined) return '—';
-    const percent = Number(similarity) * 100;
-    return `${percent.toFixed(1)}%`;
-}
-
-function formatCreatedAt(createdAt) {
-    if (!createdAt) return '—';
-    const date = new Date(createdAt);
-    if (Number.isNaN(date.getTime())) return createdAt;
-    return date.toLocaleString('ru-RU');
-}
-
-function formatMatchMessage(match) {
-    const lines = [
-        '🔎 Рекомендация:',
-        `• Тип: ${match.type ?? '—'}`,
-        `• Город/страна: ${match.city ?? '—'}, ${match.country ?? '—'}`,
-        `• Статус: ${match.status ?? '—'}`,
-        `• Похожесть: ${formatSimilarity(match.similarity)}`,
-        `• Создано: ${formatCreatedAt(match.createdAt)}`,
-    ];
-
-    return lines.join('\n');
-}
-
 async function sendRecommendation(ctx, match) {
     const keyboard = Markup.inlineKeyboard([[Markup.button.callback('⬅️ В меню', 'menu:main')]]);
     await ctx.reply(formatMatchMessage(match), keyboard);
@@ -507,13 +314,7 @@ async function loadRequests(ctx, session) {
 
         await ctx.reply('Ваши запросы:');
         for (const req of myRequests) {
-            const text = [
-                `• ${req.title || req.name || 'Запрос'}`,
-                req.description ? `Описание: ${req.description}` : null,
-                req.city ? `Город: ${req.city}` : null,
-            ]
-                .filter(Boolean)
-                .join('\n');
+            const text = formatRequestSummary(req);
             const kb = Markup.inlineKeyboard([
                 Markup.button.callback('Показать рекомендации', `req:matches:${req.id}`),
             ]);
@@ -554,7 +355,7 @@ async function showChat(ctx, session, chatId) {
         }
         session.state = 'chatting';
         session.currentChatId = chatId;
-        saveSessions();
+        sessionStore.persist();
         if (notificationService && ctx.chat?.id) {
             notificationService.enterChatMode(ctx.chat.id, session.backendUserId, chatId);
         }
@@ -595,8 +396,8 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
 
     saveUserJwt(chatId, jwt, { userId, email: effectiveEmail });
     resetState(session);
-    saveSessions();
-    clearPendingMagicLink(chatId);
+    sessionStore.persist();
+    sessionStore.clearPendingMagicLink(chatId);
 
     const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
     await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
@@ -608,7 +409,7 @@ bot.start((ctx) => {
     if (loggedIn) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
-        saveSessions();
+        sessionStore.persist();
         return sendMainMenu(ctx.chat.id, { email: loggedIn.email });
     }
     if (session.token) {
@@ -621,14 +422,14 @@ bot.start((ctx) => {
     }
     session.state = 'awaiting_email';
     session.temp = {};
-    saveSessions();
+    sessionStore.persist();
     const hint = session.lastEmail ? `\n(Последний использованный email: ${session.lastEmail})` : '';
     return ctx.reply(`Введите ваш email для входа.${hint}`);
 });
 
 bot.command('ping', async (ctx) => {
     try {
-        const res = await axios.get(buildApiUrl('/api/docs'), { timeout: 5000 }).catch(() => null);
+        const res = await axios.get(apiClient.buildUrl('/api/docs'), { timeout: 5000 }).catch(() => null);
         if (res && res.status === 200) {
             await ctx.reply('✅ Бэкенд отвечает! (GET /api/docs)');
         } else {
@@ -658,7 +459,7 @@ bot.on('text', async (ctx) => {
         const data = getCreateTemp(session);
         data.rawText = text;
         session.state = 'create:type';
-        saveSessions();
+        sessionStore.persist();
         await promptTypeSelection(ctx);
         return;
     }
@@ -671,7 +472,7 @@ bot.on('text', async (ctx) => {
         const data = getCreateTemp(session);
         data.type = text.trim();
         session.state = 'create:city';
-        saveSessions();
+        sessionStore.persist();
         await promptCity(ctx);
         return;
     }
@@ -681,14 +482,14 @@ bot.on('text', async (ctx) => {
             const data = getCreateTemp(session);
             data.city = null;
             session.state = 'create:country';
-            saveSessions();
+            sessionStore.persist();
             await promptCountry(ctx);
             return;
         }
         const data = getCreateTemp(session);
         data.city = text.trim().slice(0, 255) || null;
         session.state = 'create:country';
-        saveSessions();
+        sessionStore.persist();
         await promptCountry(ctx);
         return;
     }
@@ -697,7 +498,7 @@ bot.on('text', async (ctx) => {
         if (text === '/skip') {
             const data = getCreateTemp(session);
             data.country = null;
-            saveSessions();
+            sessionStore.persist();
             await createRequestOnBackend(ctx, session);
             return;
         }
@@ -707,7 +508,7 @@ bot.on('text', async (ctx) => {
         }
         const data = getCreateTemp(session);
         data.country = text.trim().toUpperCase();
-        saveSessions();
+        sessionStore.persist();
         await createRequestOnBackend(ctx, session);
         return;
     }
@@ -716,7 +517,7 @@ bot.on('text', async (ctx) => {
     if (!session.state && loggedIn) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
-        saveSessions();
+        sessionStore.persist();
         await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
         return;
     }
@@ -732,7 +533,7 @@ bot.on('text', async (ctx) => {
 
     if (!session.state) {
         session.state = 'awaiting_email';
-        saveSessions();
+        sessionStore.persist();
     }
 
     if (session.state === 'awaiting_email') {
@@ -769,7 +570,7 @@ bot.action('menu:main', async (ctx) => {
     const session = getSession(ctx);
     session.state = null;
     session.currentChatId = null;
-    saveSessions();
+    sessionStore.persist();
     if (notificationService && ctx.chat?.id) {
         notificationService.leaveChatMode(ctx.chat.id);
     }
@@ -835,14 +636,14 @@ bot.action(/create:type:(.+)/, async (ctx) => {
     const data = getCreateTemp(session);
     if (typeValue === 'other') {
         session.state = 'create:type-custom';
-        saveSessions();
+        sessionStore.persist();
         await ctx.reply('Напишите короткое название типа, например: “language_exchange”');
         return;
     }
 
     data.type = typeValue;
     session.state = 'create:city';
-    saveSessions();
+    sessionStore.persist();
     await promptCity(ctx);
 });
 
