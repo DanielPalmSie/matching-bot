@@ -16,7 +16,7 @@ export class LoginMercureSubscriber {
         }
 
         const topic = `/tg/login/${key}`;
-        console.log('[Mercure] Subscribing to topic:', topic);
+        console.log('BOT SUBSCRIBED', { topics: [topic], timestamp: new Date().toISOString() });
 
         const unsubscribe = this.mercureClient.subscribe(topic, (payload) => {
             console.log('[Mercure] Received raw payload for topic', topic, payload);
@@ -50,6 +50,12 @@ export class LoginMercureSubscriber {
             }
 
             console.log('[Mercure] login_success event received for chatId', chatId);
+            console.log('BOT LOGIN EVENT', {
+                chatId: String(payloadChatId),
+                backendUserId: payload.user_id ?? payload.userId ?? null,
+                email: payload.email ?? null,
+                timestamp: new Date().toISOString(),
+            });
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
@@ -64,6 +70,12 @@ export class LoginMercureSubscriber {
 
         if (payload.type === 'user_logged_in') {
             console.log('[Mercure] user_logged_in event received for chatId', chatId);
+            console.log('BOT LOGIN EVENT', {
+                chatId: String(payloadChatId || chatId),
+                backendUserId: payload.user_id ?? payload.userId ?? null,
+                email: payload.email ?? null,
+                timestamp: new Date().toISOString(),
+            });
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
