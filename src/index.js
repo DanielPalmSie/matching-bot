@@ -234,6 +234,7 @@ async function createRequestOnBackend(ctx, session) {
         );
         resetCreateRequestState(session);
     }
+}
 async function sendRecommendation(ctx, match) {
     const keyboard = Markup.inlineKeyboard([[Markup.button.callback('⬅️ В меню', 'menu:main')]]);
     await ctx.reply(formatMatchMessage(match), keyboard);
@@ -671,4 +672,4 @@ process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
     if (loginMercureSubscriber) loginMercureSubscriber.stop();
     bot.stop('SIGTERM');
-});}
+});
