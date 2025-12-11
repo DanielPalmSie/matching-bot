@@ -57,6 +57,26 @@ function clearSessionAuth(session, chatId) {
     sessionStore.clearSessionAuth(session, chatId);
 }
 
+function leaveChatState(session, telegramChatId) {
+    if (!session) return;
+    session.state = null;
+    session.currentChatId = null;
+    sessionStore.persist();
+    if (notificationService && telegramChatId) {
+        notificationService.leaveChatMode(telegramChatId);
+    }
+}
+
+function enterChatState(session, telegramChatId, chatId) {
+    if (!session || !chatId) return;
+    session.state = 'chatting';
+    session.currentChatId = chatId;
+    sessionStore.persist();
+    if (notificationService && telegramChatId) {
+        notificationService.enterChatMode(telegramChatId, session.backendUserId, chatId);
+    }
+}
+
 async function handleApiError(ctx, session, error, fallbackMessage) {
     if (error instanceof ApiError && error.isAuthError) {
         clearSessionAuth(session, ctx.chat?.id);
@@ -242,14 +262,42 @@ async function createRequestOnBackend(ctx, session) {
         resetCreateRequestState(session);
     }
 }
-async function sendRecommendation(ctx, match, targetRequestId) {
-    const keyboard = Markup.inlineKeyboard([
+function extractOwnerId(match) {
+    return (
+        match?.ownerId ||
+        match?.requestOwnerId ||
+        match?.owner?.id ||
+        match?.request?.ownerId ||
+        match?.request?.owner?.id ||
+        null
+    );
+}
+
+function buildContactAuthorCallback(targetRequestId, ownerId) {
+    const requestPart = targetRequestId ?? 'null';
+    const ownerPart = ownerId ?? 'null';
+    return `contact_author:${requestPart}:${ownerPart}`;
+}
+
+async function sendRecommendation(ctx, match, targetRequestId, session) {
+    const ownerId = extractOwnerId(match);
+    const isOwnRequest = ownerId && session?.backendUserId && Number(ownerId) === Number(session.backendUserId);
+    const showContactButton = !!ownerId && !isOwnRequest;
+
+    const rows = [
         [
             Markup.button.callback('👍 Подходит', buildFeedbackCallback('like', match, targetRequestId)),
             Markup.button.callback('👎 Не подходит', buildFeedbackCallback('dislike', match, targetRequestId)),
         ],
-        [Markup.button.callback('⬅️ В меню', 'menu:main')],
-    ]);
+    ];
+
+    if (showContactButton) {
+        rows.push([Markup.button.callback('✉️ Связаться с автором', buildContactAuthorCallback(targetRequestId, ownerId))]);
+    }
+
+    rows.push([Markup.button.callback('⬅️ В меню', 'menu:main')]);
+
+    const keyboard = Markup.inlineKeyboard(rows);
 
     await ctx.reply(formatMatchMessage(match), keyboard);
 }
@@ -348,7 +396,7 @@ async function loadMatchesForRequest(ctx, session, requestId) {
 
         const limitedMatches = items.slice(0, 5).map((match) => ({ ...match, targetRequestId: requestId }));
         for (const match of limitedMatches) {
-            await sendRecommendation(ctx, match, requestId);
+            await sendRecommendation(ctx, match, requestId, session);
         }
 
         if (items.length > limitedMatches.length) {
@@ -445,15 +493,14 @@ async function showChat(ctx, session, chatId) {
                 .join('\n');
             await ctx.reply(text);
         }
-        session.state = 'chatting';
-        session.currentChatId = chatId;
-        sessionStore.persist();
-        if (notificationService && ctx.chat?.id) {
-            notificationService.enterChatMode(ctx.chat.id, session.backendUserId, chatId);
-        }
-        await ctx.reply('Вы в режиме чата. Напишите сообщение или нажмите кнопку для выхода.', Markup.inlineKeyboard([
-            [Markup.button.callback('⬅️ В меню', 'menu:main')],
-        ]));
+        enterChatState(session, ctx.chat?.id, chatId);
+        await ctx.reply(
+            'Вы в режиме чата. Напишите сообщение или нажмите кнопку для выхода.',
+            Markup.inlineKeyboard([
+                [Markup.button.callback('⬅️ Назад к рекомендациям', 'chat:exit')],
+                [Markup.button.callback('⬅️ В меню', 'menu:main')],
+            ])
+        );
     } catch (error) {
         await handleApiError(ctx, session, error, 'Не удалось открыть чат.');
     }
@@ -476,7 +523,7 @@ async function startChatWithUser(ctx, session, userId) {
 async function sendMessageToChat(ctx, session, text) {
     try {
         await apiRequest('post', API_ROUTES.CHAT_SEND_MESSAGE(session.currentChatId), { content: text }, session.token);
-        await ctx.reply('Сообщение отправлено.');
+        await ctx.reply(`Вы: ${text}`);
     } catch (error) {
         await handleApiError(ctx, session, error, 'Не удалось отправить сообщение.');
     }
@@ -546,6 +593,22 @@ bot.command('ping', async (ctx) => {
 bot.on('text', async (ctx) => {
     const session = getSession(ctx);
     const text = ctx.message.text.trim();
+
+    if (session.state === 'chatting' && session.currentChatId) {
+        if (text === '/exit') {
+            leaveChatState(session, ctx.chat?.id);
+            await ctx.reply('Вы вышли из режима чата.', MAIN_MENU_KEYBOARD);
+            return;
+        }
+
+        const authedSession = ensureLoggedInSession(ctx);
+        if (!authedSession) {
+            return;
+        }
+
+        await sendMessageToChat(ctx, session, text);
+        return;
+    }
 
     if (session.state === 'feedback:comment') {
         const pending = getPendingFeedbackComment(session);
@@ -713,12 +776,7 @@ bot.command('create_request', async (ctx) => {
 
 bot.action('menu:main', async (ctx) => {
     const session = getSession(ctx);
-    session.state = null;
-    session.currentChatId = null;
-    sessionStore.persist();
-    if (notificationService && ctx.chat?.id) {
-        notificationService.leaveChatMode(ctx.chat.id);
-    }
+    leaveChatState(session, ctx.chat?.id);
     const loggedIn = getLoggedIn(ctx.chat?.id);
     if (!loggedIn) {
         await ctx.reply('Чтобы открыть меню, сначала авторизуйтесь через ссылку из письма.');
@@ -726,6 +784,13 @@ bot.action('menu:main', async (ctx) => {
     }
     await ctx.answerCbQuery();
     await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
+});
+
+bot.action('chat:exit', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = getSession(ctx);
+    leaveChatState(session, ctx.chat?.id);
+    await ctx.reply('Вы вышли из режима чата. Вернитесь к рекомендациям или в меню.', MAIN_MENU_KEYBOARD);
 });
 
 bot.action('menu:requests', async (ctx) => {
@@ -747,6 +812,63 @@ bot.action(/^req:matches:(\d+)$/, async (ctx) => {
     }
 
     await loadMatchesForRequest(ctx, session, requestId);
+});
+
+bot.action(/^contact_author:([^:]+):([^:]+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [, , ownerIdRaw] = ctx.match;
+    const ownerId = toNumberOrNull(ownerIdRaw);
+    const session = ensureLoggedInSession(ctx);
+    if (!session) return;
+
+    if (!ownerId) {
+        await ctx.reply('Не удалось определить автора заявки.');
+        return;
+    }
+
+    if (session.backendUserId && Number(ownerId) === Number(session.backendUserId)) {
+        await ctx.reply('Это ваша собственная заявка.');
+        return;
+    }
+
+    try {
+        const chat = await apiRequest('post', API_ROUTES.CHATS_START(ownerId), {}, session.token);
+        if (!chat?.id) {
+            await ctx.reply('Не удалось создать чат, попробуйте позже.');
+            return;
+        }
+
+        enterChatState(session, ctx.chat?.id, chat.id);
+
+        try {
+            await apiRequest(
+                'post',
+                API_ROUTES.CHAT_SEND_MESSAGE(chat.id),
+                { content: 'Привет! Я нашёл твою заявку в матчинге и хотел(а) бы обсудить её 🙂' },
+                session.token
+            );
+        } catch (sendError) {
+            console.error('Failed to send intro message to chat', sendError);
+        }
+
+        const keyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('⬅️ Назад к рекомендациям', 'chat:exit')],
+            [Markup.button.callback('⬅️ В меню', 'menu:main')],
+        ]);
+
+        await ctx.reply('Чат с автором создан, напиши своё первое сообщение.', keyboard);
+    } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+            clearSessionAuth(session, ctx.chat?.id);
+            await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
+            return;
+        }
+        if (error instanceof ApiError && error.status === 404) {
+            await ctx.reply('Автор заявки не найден.');
+            return;
+        }
+        await ctx.reply('Не удалось создать чат, попробуйте позже.');
+    }
 });
 
 bot.action('menu:chats', async (ctx) => {
