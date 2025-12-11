@@ -671,4 +671,4 @@ process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
     if (loginMercureSubscriber) loginMercureSubscriber.stop();
     bot.stop('SIGTERM');
-});
+});}
