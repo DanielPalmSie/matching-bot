@@ -82,6 +82,9 @@ export class ApiClient {
 
     async request(method, url, data, token) {
         try {
+            if (process.env.NODE_ENV !== 'production') {
+                console.log(`[api] ${String(method).toUpperCase()} ${this.buildUrl(url)}`);
+            }
             const response = await axios({
                 method,
                 url: this.buildUrl(url),
