@@ -25,11 +25,17 @@ export function formatMatchMessage(match) {
 }
 
 export function formatRequestSummary(request) {
-    return [
-        `• ${request.title || request.name || 'Запрос'}`,
-        request.description ? `Описание: ${request.description}` : null,
-        request.city ? `Город: ${request.city}` : null,
-    ]
-        .filter(Boolean)
-        .join('\n');
+    const rawText = request.rawText;
+    if (!rawText) {
+        return '• Запрос';
+    }
+
+    const normalizedText = rawText.replace(/\s+/g, ' ').trim();
+    const maxLength = 120;
+    const trimmedText =
+        normalizedText.length > maxLength
+            ? `${normalizedText.slice(0, maxLength - 1)}…`
+            : normalizedText;
+
+    return `• ${trimmedText}`;
 }
