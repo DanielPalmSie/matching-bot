@@ -8,6 +8,7 @@ import {
     setLoggedIn,
     setPendingMagicLink,
 } from '../auth/loginState.js';
+import { getTelegramUserIdFromContext, getTokenPrefix } from '../utils/telegramUserId.js';
 
 const logger = console;
 
@@ -50,25 +51,28 @@ export class SessionStore {
     }
 
     getSession(ctx) {
-        const tgId = ctx.from?.id;
-        return this.getSessionByChatId(tgId);
+        const telegramUserId = getTelegramUserIdFromContext(ctx);
+        return this.getSessionByTelegramUserId(telegramUserId);
     }
 
-    getSessionByChatId(chatId) {
-        if (!chatId) {
+    getSessionByTelegramUserId(telegramUserId) {
+        if (!telegramUserId) {
             return { ...this.defaultSession };
         }
-        if (!this.sessions[chatId]) {
-            this.sessions[chatId] = { ...this.defaultSession };
+        if (!this.sessions[telegramUserId]) {
+            this.sessions[telegramUserId] = { ...this.defaultSession };
             this.persist();
         }
-        return this.sessions[chatId];
+        return this.sessions[telegramUserId];
     }
 
-    saveUserJwt(chatId, jwt, { userId, email } = {}) {
-        const key = chatId;
-        logger.info('session.saveJwt', { key });
-        const session = this.getSessionByChatId(chatId);
+    saveUserJwt(telegramUserId, jwt, { userId, email, chatId } = {}) {
+        logger.info('session.saveJwt', {
+            telegramUserId,
+            chatId,
+            tokenPrefix: getTokenPrefix(jwt),
+        });
+        const session = this.getSessionByTelegramUserId(telegramUserId);
         if (jwt) {
             session.token = jwt;
         }
@@ -80,12 +84,12 @@ export class SessionStore {
         }
         this.persist();
 
-        const existingLoginState = getLoggedIn(chatId) || {};
+        const existingLoginState = getLoggedIn(telegramUserId) || {};
         const resolvedUserId = userId ?? existingLoginState.userId ?? session.backendUserId;
         const resolvedEmail = email ?? existingLoginState.email ?? session.lastEmail;
         const resolvedJwt = jwt ?? existingLoginState.jwt ?? session.token;
 
-        setLoggedIn(chatId, {
+        setLoggedIn(telegramUserId, {
             userId: resolvedUserId,
             email: resolvedEmail,
             jwt: resolvedJwt,
@@ -118,20 +122,20 @@ export class SessionStore {
         return session.temp.createRequest;
     }
 
-    setPendingMagicLink(chatId, email) {
-        setPendingMagicLink(chatId, email);
+    setPendingMagicLink(telegramUserId, email) {
+        setPendingMagicLink(telegramUserId, email);
     }
 
-    clearPendingMagicLink(chatId) {
-        clearPendingMagicLink(chatId);
+    clearPendingMagicLink(telegramUserId) {
+        clearPendingMagicLink(telegramUserId);
     }
 
-    clearSessionAuth(session, chatId) {
+    clearSessionAuth(session, telegramUserId) {
         if (!session) return;
         session.token = null;
         session.backendUserId = null;
         this.persist();
-        resetLoginState(chatId);
+        resetLoginState(telegramUserId);
     }
 }
 

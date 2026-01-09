@@ -7,6 +7,7 @@ import { getLoggedIn, setLoggedIn } from './auth/loginState.js';
 import SessionStore from './services/sessionStore.js';
 import ApiClient, { ApiError } from './services/apiClient.js';
 import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
+import { getTelegramUserIdFromContext, getTokenPrefix } from './utils/telegramUserId.js';
 
 const logger = console;
 
@@ -27,18 +28,47 @@ let notificationService = null;
 let loginMercureSubscriber = null;
 
 function getSession(ctx) {
-    return sessionStore.getSession(ctx);
+    const telegramUserId = resolveTelegramUserId(ctx, 'session.get');
+    return sessionStore.getSessionByTelegramUserId(telegramUserId);
 }
 
-function getSessionByChatId(chatId) {
-    return sessionStore.getSessionByChatId(chatId);
+function getSessionByTelegramUserId(telegramUserId) {
+    return sessionStore.getSessionByTelegramUserId(telegramUserId);
 }
 
-function saveUserJwt(chatId, jwt, { userId, email } = {}) {
-    sessionStore.saveUserJwt(chatId, jwt, { userId, email });
+function logSessionContext(action, { telegramUserId, chatId, token } = {}) {
+    logger.info(action, {
+        telegramUserId,
+        chatId,
+        tokenPrefix: getTokenPrefix(token),
+    });
+}
 
-    if (notificationService && chatId && (userId || sessionStore.getSessionByChatId(chatId).backendUserId)) {
-        const resolvedUserId = userId ?? sessionStore.getSessionByChatId(chatId).backendUserId;
+function resolveTelegramUserId(ctx, action) {
+    const telegramUserId = getTelegramUserIdFromContext(ctx);
+    if (!telegramUserId) {
+        logger.warn('telegramUserId.missing', {
+            action,
+            chatId: ctx.chat?.id ?? null,
+            updateType: ctx.updateType,
+        });
+    }
+    return telegramUserId;
+}
+
+function ensureTelegramUserId(ctx, action) {
+    const telegramUserId = resolveTelegramUserId(ctx, action);
+    if (!telegramUserId && typeof ctx.reply === 'function') {
+        ctx.reply('Не удалось определить пользователя Telegram. Попробуйте ещё раз.');
+    }
+    return telegramUserId;
+}
+
+function saveUserJwt(telegramUserId, jwt, { userId, email, chatId } = {}) {
+    sessionStore.saveUserJwt(telegramUserId, jwt, { userId, email, chatId });
+
+    if (notificationService && chatId && (userId || sessionStore.getSessionByTelegramUserId(telegramUserId).backendUserId)) {
+        const resolvedUserId = userId ?? sessionStore.getSessionByTelegramUserId(telegramUserId).backendUserId;
         notificationService.setBackendUserId(chatId, resolvedUserId);
     }
 }
@@ -55,8 +85,8 @@ async function apiRequest(method, url, data, token) {
     return apiClient.request(method, url, data, token);
 }
 
-function clearSessionAuth(session, chatId) {
-    sessionStore.clearSessionAuth(session, chatId);
+function clearSessionAuth(session, telegramUserId) {
+    sessionStore.clearSessionAuth(session, telegramUserId);
 }
 
 function leaveChatState(session, telegramChatId) {
@@ -83,7 +113,8 @@ function enterChatState(session, telegramChatId, chatId) {
 
 async function handleApiError(ctx, session, error, fallbackMessage) {
     if (error instanceof ApiError && error.isAuthError) {
-        clearSessionAuth(session, ctx.chat?.id);
+        const telegramUserId = resolveTelegramUserId(ctx, 'api.error.auth');
+        clearSessionAuth(session, telegramUserId);
         await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
         return;
     }
@@ -94,26 +125,37 @@ async function handleApiError(ctx, session, error, fallbackMessage) {
 const SUCCESS_MAGIC_LINK_MESSAGE = 'Мы отправили вам письмо со ссылкой для входа.\nПроверьте вашу почту и нажмите на ссылку, чтобы войти.';
 
 async function requestMagicLink(ctx, session, email) {
+    const telegramUserId = resolveTelegramUserId(ctx, 'magicLink.request');
+    if (!telegramUserId) {
+        await ctx.reply('Не удалось определить пользователя Telegram. Попробуйте ещё раз.');
+        return;
+    }
+    const chatId = ctx.chat?.id;
+    logSessionContext('magicLink.request', {
+        telegramUserId,
+        chatId,
+        token: session?.token,
+    });
     logger.info('magicLink.request', {
-        chatId: String(ctx.chat?.id),
-        fromId: String(ctx.from?.id),
+        chatId: String(chatId),
+        fromId: String(telegramUserId),
     });
     const name = ctx.from?.first_name || ctx.from?.username || undefined;
-    const chatId = ctx.chat?.id;
     try {
         const payload = {
             email,
             name,
             telegram_chat_id: chatId !== undefined ? String(chatId) : undefined,
+            telegram_user_id: telegramUserId,
         };
 
         await apiRequest('post', API_ROUTES.MAGIC_LINK_REQUEST, payload, null);
         session.lastEmail = email;
         resetState(session);
         sessionStore.persist();
-        sessionStore.setPendingMagicLink(chatId, email);
-        if (chatId && loginMercureSubscriber) {
-            loginMercureSubscriber.ensureSubscription(chatId);
+        sessionStore.setPendingMagicLink(telegramUserId, email);
+        if (telegramUserId && loginMercureSubscriber) {
+            loginMercureSubscriber.ensureSubscription(telegramUserId);
         }
         await ctx.reply(SUCCESS_MAGIC_LINK_MESSAGE);
     } catch (error) {
@@ -174,40 +216,45 @@ async function sendMainMenu(chatId, userInfo = {}) {
 
 function ensureLoggedInSession(ctx) {
     const session = getSession(ctx);
+    const telegramUserId = resolveTelegramUserId(ctx, 'auth.ensure');
+    if (!telegramUserId) {
+        ctx.reply('Не удалось определить пользователя Telegram. Попробуйте ещё раз.');
+        return null;
+    }
     const chatId = ctx.chat?.id;
-    const loggedIn = getLoggedIn(chatId);
+    const loggedIn = getLoggedIn(telegramUserId);
 
     if (loggedIn?.jwt) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
         sessionStore.persist();
-        logger.info('auth.check', {
-            key: chatId,
-            memJwt: !!loggedIn?.jwt,
-            fileToken: !!session?.token,
+        logSessionContext('auth.check', {
+            telegramUserId,
+            chatId,
+            token: loggedIn.jwt,
         });
         return session;
     }
 
     if (session.token) {
-        setLoggedIn(chatId, {
+        setLoggedIn(telegramUserId, {
             userId: session.backendUserId,
             email: session.lastEmail,
             jwt: session.token,
         });
-        logger.info('auth.check', {
-            key: chatId,
-            memJwt: !!loggedIn?.jwt,
-            fileToken: !!session?.token,
+        logSessionContext('auth.check', {
+            telegramUserId,
+            chatId,
+            token: session.token,
         });
         return session;
     }
 
     ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
-    logger.info('auth.check', {
-        key: chatId,
-        memJwt: !!loggedIn?.jwt,
-        fileToken: !!session?.token,
+    logSessionContext('auth.check', {
+        telegramUserId,
+        chatId,
+        token: session?.token,
     });
     return null;
 }
@@ -249,6 +296,10 @@ async function promptCountry(ctx) {
 }
 
 async function createRequestOnBackend(ctx, session) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'request.create');
+    if (!telegramUserId) {
+        return;
+    }
     const data = getCreateTemp(session);
     const payload = {
         rawText: data.rawText,
@@ -281,7 +332,7 @@ async function createRequestOnBackend(ctx, session) {
             return;
         }
         if (error instanceof ApiError && error.isAuthError) {
-            clearSessionAuth(session, ctx.chat?.id);
+            clearSessionAuth(session, telegramUserId);
             resetCreateRequestState(session);
             await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите заново.', MAIN_MENU_KEYBOARD);
             return;
@@ -411,6 +462,10 @@ async function submitMatchFeedback(session, payload) {
 }
 
 async function loadMatchesForRequest(ctx, session, requestId) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'matches.load');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const matches = await apiRequest(
             'get',
@@ -446,7 +501,7 @@ async function loadMatchesForRequest(ctx, session, requestId) {
                 return;
             }
             if (error.isAuthError) {
-                clearSessionAuth(session, ctx.chat?.id);
+                clearSessionAuth(session, telegramUserId);
                 await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите снова через ссылку из письма.');
                 return;
             }
@@ -457,6 +512,10 @@ async function loadMatchesForRequest(ctx, session, requestId) {
 }
 
 async function chooseRequestForMatches(ctx, session) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'requests.choose');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const data = await apiRequest('get', API_ROUTES.REQUESTS_MINE, null, session.token);
         const myRequests = Array.isArray(data) ? data : data?.items || [];
@@ -474,6 +533,10 @@ async function chooseRequestForMatches(ctx, session) {
 }
 
 async function loadRequests(ctx, session) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'requests.load');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const data = await apiRequest('get', API_ROUTES.REQUESTS_MINE, null, session.token);
         const myRequests = Array.isArray(data) ? data : data?.items || [];
@@ -497,6 +560,10 @@ async function loadRequests(ctx, session) {
 }
 
 async function loadChats(ctx, session) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'chats.load');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const chats = await apiRequest('get', API_ROUTES.CHATS_LIST, null, session.token);
         const chatList = Array.isArray(chats) ? chats : chats?.items || [];
@@ -547,6 +614,10 @@ async function loadChatParticipantMap(session, chatId) {
 }
 
 async function showChat(ctx, session, chatId, { showIntro = true } = {}) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'chats.show');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const messages = await apiRequest(
             'get',
@@ -618,6 +689,10 @@ async function showChat(ctx, session, chatId, { showIntro = true } = {}) {
 }
 
 async function startChatWithUser(ctx, session, userId) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'chats.start');
+    if (!telegramUserId) {
+        return;
+    }
     if (!userId) {
         await ctx.reply('Не удалось определить пользователя для контакта.');
         return;
@@ -632,6 +707,10 @@ async function startChatWithUser(ctx, session, userId) {
 }
 
 async function sendMessageToChat(ctx, session, text) {
+    const telegramUserId = ensureTelegramUserId(ctx, 'chats.message');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const activeChatId = session.activeChatId || session.currentChatId;
         await apiRequest('post', API_ROUTES.CHAT_SEND_MESSAGE(activeChatId), { content: text }, session.token);
@@ -641,14 +720,28 @@ async function sendMessageToChat(ctx, session, text) {
     }
 }
 
-async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
+async function handleUserLoggedInEvent({ telegramUserId, chatId, userId, email, jwt }) {
     logger.info('login.handle', {
+        telegramUserId,
         chatId,
         hasJwt: !!jwt,
         jwtLength: jwt?.length,
+        tokenPrefix: getTokenPrefix(jwt),
     });
-    console.log('[Auth] Received login event for chatId', chatId, 'payload:', { userId, email });
-    const session = getSessionByChatId(chatId);
+    console.log('[Auth] Received login event', {
+        telegramUserId,
+        chatId,
+        userId,
+        email,
+    });
+    if (!telegramUserId) {
+        logger.warn('login.handle.missingTelegramUserId', {
+            chatId,
+            tokenPrefix: getTokenPrefix(jwt),
+        });
+        return;
+    }
+    const session = getSessionByTelegramUserId(telegramUserId);
     const effectiveEmail = email || session.lastEmail;
     let resolvedUserId = userId;
 
@@ -657,23 +750,33 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
             const profile = await apiRequest('get', API_ROUTES.ME, null, jwt);
             resolvedUserId = profile?.id;
         } catch (error) {
-            console.error('Failed to resolve userId after login event', { chatId, error });
+            console.error('Failed to resolve userId after login event', {
+                telegramUserId,
+                chatId,
+                error,
+            });
         }
     }
 
     console.log('BOT LOGIN STATE UPDATE', {
+        telegramUserId,
         chatId,
         jwtLength: jwt?.length || 0,
+        tokenPrefix: getTokenPrefix(jwt),
         backendUserId: resolvedUserId || null,
         timestamp: new Date().toISOString(),
     });
-    saveUserJwt(chatId, jwt, { userId: resolvedUserId, email: effectiveEmail });
+    saveUserJwt(telegramUserId, jwt, { userId: resolvedUserId, email: effectiveEmail, chatId });
     resetState(session);
     sessionStore.persist();
-    sessionStore.clearPendingMagicLink(chatId);
+    sessionStore.clearPendingMagicLink(telegramUserId);
 
     const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
-    console.log('BOT SEND MENU START', { chatId, timestamp: new Date().toISOString() });
+    console.log('BOT SEND MENU START', {
+        telegramUserId,
+        chatId,
+        timestamp: new Date().toISOString(),
+    });
     try {
         logger.info('menu.sending', {
             chatId: String(chatId),
@@ -685,12 +788,14 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
             ts: new Date().toISOString(),
         });
         console.log('BOT SEND MENU DONE', {
+            telegramUserId,
             chatId,
             messageId: message?.message_id ?? null,
             timestamp: new Date().toISOString(),
         });
     } catch (error) {
         console.log('BOT SEND MENU DONE', {
+            telegramUserId,
             chatId,
             error: error?.message || error,
             timestamp: new Date().toISOString(),
@@ -701,7 +806,11 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
 
 bot.start((ctx) => {
     const session = getSession(ctx);
-    const loggedIn = getLoggedIn(ctx.chat?.id);
+    const telegramUserId = ensureTelegramUserId(ctx, 'bot.start');
+    if (!telegramUserId) {
+        return;
+    }
+    const loggedIn = getLoggedIn(telegramUserId);
     if (loggedIn) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
@@ -709,7 +818,7 @@ bot.start((ctx) => {
         return sendMainMenu(ctx.chat.id, { email: loggedIn.email });
     }
     if (session.token) {
-        setLoggedIn(ctx.chat?.id, {
+        setLoggedIn(telegramUserId, {
             userId: session.backendUserId,
             email: session.lastEmail,
             jwt: session.token,
@@ -724,6 +833,10 @@ bot.start((ctx) => {
 });
 
 bot.command('ping', async (ctx) => {
+    const telegramUserId = ensureTelegramUserId(ctx, 'bot.ping');
+    if (!telegramUserId) {
+        return;
+    }
     try {
         const res = await axios.get(apiClient.buildUrl('/api/docs'), { timeout: 5000 }).catch(() => null);
         if (res && res.status === 200) {
@@ -739,6 +852,10 @@ bot.command('ping', async (ctx) => {
 
 bot.on('text', async (ctx) => {
     const session = getSession(ctx);
+    const telegramUserId = ensureTelegramUserId(ctx, 'bot.text');
+    if (!telegramUserId) {
+        return;
+    }
     const text = ctx.message.text.trim();
 
     const activeChatId = session.activeChatId || session.currentChatId;
@@ -869,7 +986,7 @@ bot.on('text', async (ctx) => {
         return;
     }
 
-    const loggedIn = getLoggedIn(ctx.chat?.id);
+    const loggedIn = getLoggedIn(telegramUserId);
     if (!session.state && loggedIn) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
@@ -878,7 +995,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     if (!session.state && session.token) {
-        setLoggedIn(ctx.chat?.id, {
+        setLoggedIn(telegramUserId, {
             userId: session.backendUserId,
             email: session.lastEmail,
             jwt: session.token,
@@ -905,7 +1022,11 @@ bot.on('text', async (ctx) => {
 });
 
 bot.command('menu', async (ctx) => {
-    const loggedIn = getLoggedIn(ctx.chat?.id);
+    const telegramUserId = ensureTelegramUserId(ctx, 'menu.command');
+    if (!telegramUserId) {
+        return;
+    }
+    const loggedIn = getLoggedIn(telegramUserId);
     if (!loggedIn) {
         await ctx.reply('Чтобы открыть меню, сначала авторизуйтесь через ссылку из письма.');
         return;
@@ -925,7 +1046,11 @@ bot.command('create_request', async (ctx) => {
 bot.action('menu:main', async (ctx) => {
     const session = getSession(ctx);
     leaveChatState(session, ctx.chat?.id);
-    const loggedIn = getLoggedIn(ctx.chat?.id);
+    const telegramUserId = ensureTelegramUserId(ctx, 'menu.main');
+    if (!telegramUserId) {
+        return;
+    }
+    const loggedIn = getLoggedIn(telegramUserId);
     if (!loggedIn) {
         await ctx.reply('Чтобы открыть меню, сначала авторизуйтесь через ссылку из письма.');
         return;
@@ -1007,7 +1132,8 @@ bot.action(/^contact_author:([^:]+):([^:]+)$/, async (ctx) => {
         await ctx.reply('Чат с автором создан, напиши своё первое сообщение.', keyboard);
     } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
-            clearSessionAuth(session, ctx.chat?.id);
+            const telegramUserId = resolveTelegramUserId(ctx, 'chats.start.auth');
+            clearSessionAuth(session, telegramUserId);
             await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
             return;
         }
