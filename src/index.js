@@ -161,7 +161,15 @@ async function sendMainMenu(chatId, userInfo = {}) {
     if (!chatId) return;
     const greetingName = userInfo.name || userInfo.email || 'друг';
     const message = `Добро пожаловать, ${greetingName}!`;
-    await bot.telegram.sendMessage(chatId, message, MAIN_MENU_KEYBOARD);
+    logger.info('menu.sending', {
+        chatId: String(chatId),
+    });
+    const sent = await bot.telegram.sendMessage(chatId, message, MAIN_MENU_KEYBOARD);
+    logger.info('menu.sent', {
+        chatId: String(chatId),
+        messageId: String(sent?.message_id),
+        ts: new Date().toISOString(),
+    });
 }
 
 function ensureLoggedInSession(ctx) {
@@ -667,7 +675,15 @@ async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
     const loginMessage = 'Вы успешно вошли! Вот ваше меню:';
     console.log('BOT SEND MENU START', { chatId, timestamp: new Date().toISOString() });
     try {
+        logger.info('menu.sending', {
+            chatId: String(chatId),
+        });
         const message = await bot.telegram.sendMessage(chatId, loginMessage, MAIN_MENU_KEYBOARD);
+        logger.info('menu.sent', {
+            chatId: String(chatId),
+            messageId: String(message?.message_id),
+            ts: new Date().toISOString(),
+        });
         console.log('BOT SEND MENU DONE', {
             chatId,
             messageId: message?.message_id ?? null,
