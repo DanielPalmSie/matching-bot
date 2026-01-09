@@ -94,6 +94,10 @@ async function handleApiError(ctx, session, error, fallbackMessage) {
 const SUCCESS_MAGIC_LINK_MESSAGE = 'Мы отправили вам письмо со ссылкой для входа.\nПроверьте вашу почту и нажмите на ссылку, чтобы войти.';
 
 async function requestMagicLink(ctx, session, email) {
+    logger.info('magicLink.request', {
+        chatId: String(ctx.chat?.id),
+        fromId: String(ctx.from?.id),
+    });
     const name = ctx.from?.first_name || ctx.from?.username || undefined;
     const chatId = ctx.chat?.id;
     try {
