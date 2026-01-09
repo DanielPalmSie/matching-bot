@@ -1,40 +1,40 @@
-const loggedInByChatId = new Map();
-const pendingMagicLinkByChatId = new Map();
+const loggedInByTelegramUserId = new Map();
+const pendingMagicLinkByTelegramUserId = new Map();
 
-export function setPendingMagicLink(chatId, email) {
-    if (!chatId) return;
-    pendingMagicLinkByChatId.set(String(chatId), { email });
+export function setPendingMagicLink(telegramUserId, email) {
+    if (!telegramUserId) return;
+    pendingMagicLinkByTelegramUserId.set(String(telegramUserId), { email });
 }
 
-export function clearPendingMagicLink(chatId) {
-    if (!chatId) return;
-    pendingMagicLinkByChatId.delete(String(chatId));
+export function clearPendingMagicLink(telegramUserId) {
+    if (!telegramUserId) return;
+    pendingMagicLinkByTelegramUserId.delete(String(telegramUserId));
 }
 
-export function setLoggedIn(chatId, data) {
-    if (!chatId) return;
-    loggedInByChatId.set(String(chatId), data);
-    clearPendingMagicLink(chatId);
+export function setLoggedIn(telegramUserId, data) {
+    if (!telegramUserId) return;
+    loggedInByTelegramUserId.set(String(telegramUserId), data);
+    clearPendingMagicLink(telegramUserId);
 }
 
-export function getLoggedIn(chatId) {
-    if (!chatId) return null;
-    return loggedInByChatId.get(String(chatId)) || null;
+export function getLoggedIn(telegramUserId) {
+    if (!telegramUserId) return null;
+    return loggedInByTelegramUserId.get(String(telegramUserId)) || null;
 }
 
-export function hasPendingMagicLink(chatId) {
-    if (!chatId) return false;
-    return pendingMagicLinkByChatId.has(String(chatId));
+export function hasPendingMagicLink(telegramUserId) {
+    if (!telegramUserId) return false;
+    return pendingMagicLinkByTelegramUserId.has(String(telegramUserId));
 }
 
-export function resetLoginState(chatId) {
-    if (!chatId) return;
-    loggedInByChatId.delete(String(chatId));
-    clearPendingMagicLink(chatId);
+export function resetLoginState(telegramUserId) {
+    if (!telegramUserId) return;
+    loggedInByTelegramUserId.delete(String(telegramUserId));
+    clearPendingMagicLink(telegramUserId);
 }
 
 export function listLoginState() {
-    return { loggedInByChatId, pendingMagicLinkByChatId };
+    return { loggedInByTelegramUserId, pendingMagicLinkByTelegramUserId };
 }
 
 export default {

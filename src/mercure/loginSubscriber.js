@@ -1,4 +1,5 @@
 import MercureSseClient from './mercureSseClient.js';
+import { getTelegramUserIdFromPayload, getTokenPrefix } from '../utils/telegramUserId.js';
 
 const logger = console;
 
@@ -6,14 +7,14 @@ export class LoginMercureSubscriber {
     constructor({ hubUrl, jwt, onUserLoggedIn }) {
         this.mercureClient = new MercureSseClient({ hubUrl, jwt });
         this.onUserLoggedIn = onUserLoggedIn;
-        this.subscriptions = new Map(); // chatId -> unsubscribe
+        this.subscriptions = new Map(); // telegramUserId -> unsubscribe
     }
 
-    ensureSubscription(chatId) {
-        if (!chatId) return;
-        const key = String(chatId);
+    ensureSubscription(telegramUserId) {
+        if (!telegramUserId) return;
+        const key = String(telegramUserId);
         if (this.subscriptions.has(key)) {
-            console.log('[Mercure] Already subscribed for chatId', key);
+            console.log('[Mercure] Already subscribed for telegramUserId', key);
             return;
         }
 
@@ -26,59 +27,74 @@ export class LoginMercureSubscriber {
         });
 
         this.subscriptions.set(key, unsubscribe);
-        console.log('[Mercure] Subscription stored for chatId', key);
+        console.log('[Mercure] Subscription stored for telegramUserId', key);
     }
 
 
-    handlePayload(chatId, payload, topic) {
+    handlePayload(subscriptionKey, payload, topic) {
         const type = payload?.type;
+        const telegramUserId = getTelegramUserIdFromPayload(payload);
+        const payloadChatId = payload.chat_id ?? payload.chatId ?? payload.telegram_chat_id;
+        const resolvedTelegramUserId = telegramUserId ?? (payloadChatId ? String(payloadChatId) : null);
+        if (!telegramUserId && payloadChatId) {
+            console.warn('[Mercure] Missing telegramUserId in payload; using chatId fallback', {
+                subscriptionKey,
+                payloadChatId,
+            });
+        }
         logger.info('mercure.login.event', {
             type,
-            chatId,
+            telegramUserId: resolvedTelegramUserId,
+            chatId: payloadChatId ?? null,
             hasJwt: !!payload?.jwt,
-            jwtPrefix: payload?.jwt ? payload.jwt.slice(0, 6) : null,
+            jwtPrefix: getTokenPrefix(payload?.jwt),
         });
-        console.log('[Mercure] handlePayload called for chatId', chatId, 'payload:', payload);
+        console.log('[Mercure] handlePayload called for subscription', subscriptionKey, 'payload:', payload);
 
         if (!payload || !payload.type) {
             console.log('[Mercure] Invalid payload, skipping');
             return;
         }
 
-        const payloadChatId = payload.chat_id ?? payload.chatId ?? payload.telegram_chat_id;
-
-        if (payloadChatId && String(payloadChatId) !== String(chatId)) {
-            console.log('[Mercure] ChatId mismatch for payload; expected', chatId, 'got', payloadChatId, 'skipping');
+        if (resolvedTelegramUserId && String(resolvedTelegramUserId) !== String(subscriptionKey)) {
+            console.log('[Mercure] TelegramUserId mismatch for payload; expected', subscriptionKey, 'got', resolvedTelegramUserId, 'skipping');
             return;
         }
 
         if (payload.type === 'login_success') {
-            console.log('[Mercure] BOT LOGIN EVENT', { chatId: String(chatId), topic, hasJwt: !!payload.jwt });
+            console.log('[Mercure] BOT LOGIN EVENT', {
+                telegramUserId: String(subscriptionKey),
+                chatId: payloadChatId ?? null,
+                topic,
+                hasJwt: !!payload.jwt,
+            });
 
             if (!payload.jwt) {
                 console.warn('[Mercure] login_success event without jwt, skipping');
                 return;
             }
 
-            console.log('[Mercure] BOT LOGIN STATE UPDATE', { chatId: String(chatId) });
+            console.log('[Mercure] BOT LOGIN STATE UPDATE', { telegramUserId: String(subscriptionKey) });
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
-                    chatId: String(chatId),
+                    telegramUserId: String(subscriptionKey),
+                    chatId: payloadChatId ? String(payloadChatId) : null,
                     jwt: payload.jwt,
                     email: payload.email,
                     userId: payload.user_id ?? payload.userId,
                 });
             }
 
-            console.log('[Mercure] BOT SEND MENU DONE', { chatId: String(chatId) });
+            console.log('[Mercure] BOT SEND MENU DONE', { telegramUserId: String(subscriptionKey) });
             return;
         }
 
         if (payload.type === 'user_logged_in') {
-            console.log('[Mercure] user_logged_in event received for chatId', chatId);
+            console.log('[Mercure] user_logged_in event received for telegramUserId', subscriptionKey);
             console.log('BOT LOGIN EVENT', {
-                chatId: String(payloadChatId || chatId),
+                telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
+                chatId: String(payloadChatId || ''),
                 backendUserId: payload.user_id ?? payload.userId ?? null,
                 email: payload.email ?? null,
                 timestamp: new Date().toISOString(),
@@ -86,7 +102,8 @@ export class LoginMercureSubscriber {
 
             if (typeof this.onUserLoggedIn === 'function') {
                 this.onUserLoggedIn({
-                    chatId: String(payloadChatId || chatId),
+                    telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
+                    chatId: payloadChatId ? String(payloadChatId) : null,
                     userId: payload.user_id ?? payload.userId,
                     email: payload.email,
                     jwt: payload.jwt,

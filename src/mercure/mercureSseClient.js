@@ -232,9 +232,12 @@ export class MercureSseClient extends EventEmitter {
     }
 
     deriveTopicsFromPayload(payload) {
+        const telegramUserId =
+            payload?.telegramUserId || payload?.telegram_user_id || payload?.telegram_userId;
         const chatId = payload?.chatId || payload?.chat_id || payload?.telegram_chat_id;
-        if (chatId) {
-            return [`/tg/login/${chatId}`];
+        const topicKey = telegramUserId || chatId;
+        if (topicKey) {
+            return [`/tg/login/${topicKey}`];
         }
         return [];
     }
