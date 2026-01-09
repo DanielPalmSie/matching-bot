@@ -12,8 +12,10 @@ function formatCreatedAt(createdAt) {
 }
 
 export function formatMatchMessage(match) {
+    const rawTextShort = match?.rawTextShort?.trim();
     const lines = [
         '🔎 Рекомендация:',
+        `• Описание: ${rawTextShort || '—'}`,
         `• Тип: ${match.type ?? '—'}`,
         `• Город/страна: ${match.city ?? '—'}, ${match.country ?? '—'}`,
         `• Статус: ${match.status ?? '—'}`,
