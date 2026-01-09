@@ -1339,3 +1339,4 @@ process.once('SIGTERM', () => {
     if (loginMercureSubscriber) loginMercureSubscriber.stop();
     bot.stop('SIGTERM');
 });
+//
