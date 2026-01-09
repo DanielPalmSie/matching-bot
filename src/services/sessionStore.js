@@ -9,6 +9,8 @@ import {
     setPendingMagicLink,
 } from '../auth/loginState.js';
 
+const logger = console;
+
 export class SessionStore {
     constructor({ dataDir = '../../data', fileName = 'sessions.json' } = {}) {
         this.filePath = this.resolveFilePath(dataDir, fileName);
@@ -64,6 +66,8 @@ export class SessionStore {
     }
 
     saveUserJwt(chatId, jwt, { userId, email } = {}) {
+        const key = chatId;
+        logger.info('session.saveJwt', { key });
         const session = this.getSessionByChatId(chatId);
         if (jwt) {
             session.token = jwt;

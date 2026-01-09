@@ -8,6 +8,8 @@ import SessionStore from './services/sessionStore.js';
 import ApiClient, { ApiError } from './services/apiClient.js';
 import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
 
+const logger = console;
+
 const botToken = process.env.BOT_TOKEN;
 const apiUrl = process.env.API_BASE_URL || process.env.BACKEND_API_BASE_URL || process.env.API_URL || 'https://matchinghub.work';
 const mercureHubUrl = process.env.MERCURE_HUB_URL || 'https://matchinghub.work/.well-known/mercure';
@@ -167,6 +169,11 @@ function ensureLoggedInSession(ctx) {
         session.token = loggedIn.jwt;
         session.backendUserId = loggedIn.userId;
         sessionStore.persist();
+        logger.info('auth.check', {
+            key: chatId,
+            memJwt: !!loggedIn?.jwt,
+            fileToken: !!session?.token,
+        });
         return session;
     }
 
@@ -176,10 +183,20 @@ function ensureLoggedInSession(ctx) {
             email: session.lastEmail,
             jwt: session.token,
         });
+        logger.info('auth.check', {
+            key: chatId,
+            memJwt: !!loggedIn?.jwt,
+            fileToken: !!session?.token,
+        });
         return session;
     }
 
     ctx.reply('Чтобы продолжить, сначала авторизуйтесь через ссылку из письма.');
+    logger.info('auth.check', {
+        key: chatId,
+        memJwt: !!loggedIn?.jwt,
+        fileToken: !!session?.token,
+    });
     return null;
 }
 
@@ -613,6 +630,11 @@ async function sendMessageToChat(ctx, session, text) {
 }
 
 async function handleUserLoggedInEvent({ chatId, userId, email, jwt }) {
+    logger.info('login.handle', {
+        chatId,
+        hasJwt: !!jwt,
+        jwtLength: jwt?.length,
+    });
     console.log('[Auth] Received login event for chatId', chatId, 'payload:', { userId, email });
     const session = getSessionByChatId(chatId);
     const effectiveEmail = email || session.lastEmail;

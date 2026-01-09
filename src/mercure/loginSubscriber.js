@@ -1,5 +1,7 @@
 import MercureSseClient from './mercureSseClient.js';
 
+const logger = console;
+
 export class LoginMercureSubscriber {
     constructor({ hubUrl, jwt, onUserLoggedIn }) {
         this.mercureClient = new MercureSseClient({ hubUrl, jwt });
@@ -29,6 +31,13 @@ export class LoginMercureSubscriber {
 
 
     handlePayload(chatId, payload, topic) {
+        const type = payload?.type;
+        logger.info('mercure.login.event', {
+            type,
+            chatId,
+            hasJwt: !!payload?.jwt,
+            jwtPrefix: payload?.jwt ? payload.jwt.slice(0, 6) : null,
+        });
         console.log('[Mercure] handlePayload called for chatId', chatId, 'payload:', payload);
 
         if (!payload || !payload.type) {
