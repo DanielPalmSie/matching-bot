@@ -186,6 +186,7 @@ async function requireAuth(ctx) {
 
 const MAIN_MENU_KEYBOARD = Markup.inlineKeyboard([
     [Markup.button.callback('Создать запрос', 'menu:create')],
+    [Markup.button.callback('Установить локацию', 'menu:setlocation')],
     [Markup.button.callback('Мои запросы', 'menu:requests')],
     [Markup.button.callback('Мои чаты', 'menu:chats')],
 ]);
@@ -267,6 +268,30 @@ function getCreateTemp(session) {
     return sessionStore.getCreateTemp(session);
 }
 
+const GEO_SELECTION_TTL_MS = 10 * 60 * 1000;
+
+function ensureGeoTemp(session) {
+    if (!session.temp) {
+        session.temp = {};
+    }
+    if (!session.temp.geo) {
+        session.temp.geo = {};
+    }
+    return session.temp.geo;
+}
+
+function hasSavedLocation(session) {
+    return Boolean(session?.temp?.location?.country && session?.temp?.location?.city);
+}
+
+function formatSavedLocationLabel(location) {
+    if (!location?.city || !location?.country) {
+        return 'сохраненная локация';
+    }
+    const regionPart = location.city.region ? `, ${location.city.region}` : '';
+    return `${location.city.name}${regionPart} (${location.country.code})`;
+}
+
 async function startCreateRequestFlow(ctx, session) {
     if (!session?.token) {
         await ctx.reply('Не удалось найти вашу активную сессию. Пожалуйста, войдите заново через ссылку-логин.');
@@ -295,6 +320,16 @@ async function promptCountry(ctx) {
     await ctx.reply('Укажите страну (ISO-код, например: DE, ES, RU).\nИли отправьте /skip, чтобы пропустить.');
 }
 
+async function promptLocationChoice(ctx, session) {
+    const location = session?.temp?.location;
+    const label = formatSavedLocationLabel(location);
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(`Использовать ${label}`, 'create:use_saved_location')],
+        [Markup.button.callback('Ввести вручную', 'create:manual_location')],
+    ]);
+    await ctx.reply('Хотите использовать сохраненную локацию или указать вручную?', keyboard);
+}
+
 async function createRequestOnBackend(ctx, session) {
     const telegramUserId = ensureTelegramUserId(ctx, 'request.create');
     if (!telegramUserId) {
@@ -306,6 +341,7 @@ async function createRequestOnBackend(ctx, session) {
         type: data.type,
         city: data.city ?? null,
         country: data.country ?? null,
+        location: data.location ?? null,
     };
 
     try {
@@ -459,6 +495,59 @@ function buildFeedbackPayload(session, { matchId = null, targetRequestId = null,
 
 async function submitMatchFeedback(session, payload) {
     return apiRequest('post', API_ROUTES.FEEDBACK_MATCH, payload, session.token);
+}
+
+async function startSetLocationFlow(ctx, session) {
+    const geoTemp = ensureGeoTemp(session);
+    geoTemp.lastCountries = {};
+    geoTemp.lastCities = {};
+    geoTemp.country = null;
+    geoTemp.city = null;
+    geoTemp.lastCountriesAt = null;
+    geoTemp.lastCitiesAt = null;
+    session.state = 'WAIT_COUNTRY_QUERY';
+    sessionStore.persist();
+    await ctx.reply('Type country name (min 2 chars). Example: ge, ger, fra');
+}
+
+function isGeoSelectionExpired(timestamp) {
+    if (!timestamp) return true;
+    return Date.now() - timestamp > GEO_SELECTION_TTL_MS;
+}
+
+function buildGeoCountriesKeyboard(countries) {
+    const mapping = {};
+    const rows = countries.map((country, index) => {
+        const key = String(index + 1);
+        mapping[key] = { code: country.code, name: country.name };
+        return [Markup.button.callback(`${country.name} (${country.code})`, `geo_country_pick:${key}`)];
+    });
+    rows.push([Markup.button.callback('Отмена', 'geo_cancel')]);
+    return { keyboard: Markup.inlineKeyboard(rows), mapping };
+}
+
+function buildGeoCitiesKeyboard(cities) {
+    const mapping = {};
+    const rows = cities.map((city, index) => {
+        const key = String(index + 1);
+        mapping[key] = {
+            id: city.id,
+            name: city.name,
+            region: city.region ?? null,
+            countryCode: city.countryCode,
+            latitude: city.latitude,
+            longitude: city.longitude,
+        };
+        const regionPart = city.region ? `, ${city.region}` : '';
+        const label = `${city.name}${regionPart} (${city.countryCode})`;
+        return [Markup.button.callback(label, `geo_city_pick:${key}`)];
+    });
+    rows.push([Markup.button.callback('Отмена', 'geo_cancel')]);
+    return { keyboard: Markup.inlineKeyboard(rows), mapping };
+}
+
+function isGeoServiceUnavailable(error) {
+    return error instanceof ApiError && error.status === 503 && error.message === 'geo_service_unavailable';
 }
 
 async function loadMatchesForRequest(ctx, session, requestId) {
@@ -924,6 +1013,72 @@ bot.on('text', async (ctx) => {
         return;
     }
 
+    if (session.state === 'WAIT_COUNTRY_QUERY') {
+        const q = text.trim();
+        if (q.length < 2) {
+            await ctx.reply('Please type at least 2 characters');
+            return;
+        }
+        try {
+            const countries = await apiClient.get(API_ROUTES.GEO_COUNTRIES, { params: { q, limit: 10 } });
+            const list = Array.isArray(countries) ? countries : [];
+            if (!list.length) {
+                await ctx.reply('No countries found, try another query');
+                return;
+            }
+            const geoTemp = ensureGeoTemp(session);
+            const { keyboard, mapping } = buildGeoCountriesKeyboard(list.slice(0, 10));
+            geoTemp.lastCountries = mapping;
+            geoTemp.lastCountriesAt = Date.now();
+            sessionStore.persist();
+            await ctx.reply('Выберите страну:', keyboard);
+        } catch (error) {
+            if (isGeoServiceUnavailable(error)) {
+                await ctx.reply('Geo service is temporarily unavailable, please try again.');
+                return;
+            }
+            console.error('Failed to load countries', error);
+            await ctx.reply('Не удалось получить список стран. Попробуйте позже.');
+        }
+        return;
+    }
+
+    if (session.state === 'WAIT_CITY_QUERY') {
+        const q = text.trim();
+        const geoTemp = ensureGeoTemp(session);
+        if (!geoTemp.country) {
+            await ctx.reply('Сначала выберите страну.');
+            return;
+        }
+        if (q.length < 2) {
+            await ctx.reply('Please type at least 2 characters');
+            return;
+        }
+        try {
+            const cities = await apiClient.get(API_ROUTES.GEO_CITIES, {
+                params: { q, country: geoTemp.country.code, limit: 10 },
+            });
+            const list = Array.isArray(cities) ? cities : [];
+            if (!list.length) {
+                await ctx.reply('No cities found, try another query');
+                return;
+            }
+            const { keyboard, mapping } = buildGeoCitiesKeyboard(list.slice(0, 10));
+            geoTemp.lastCities = mapping;
+            geoTemp.lastCitiesAt = Date.now();
+            sessionStore.persist();
+            await ctx.reply('Выберите город:', keyboard);
+        } catch (error) {
+            if (isGeoServiceUnavailable(error)) {
+                await ctx.reply('Geo service is temporarily unavailable, please try again.');
+                return;
+            }
+            console.error('Failed to load cities', error);
+            await ctx.reply('Не удалось получить список городов. Попробуйте позже.');
+        }
+        return;
+    }
+
     if (session.state === 'create:rawText') {
         if (!text.trim()) {
             await ctx.reply('Пожалуйста, опишите ваш запрос хотя бы одним словом.');
@@ -944,6 +1099,12 @@ bot.on('text', async (ctx) => {
         }
         const data = getCreateTemp(session);
         data.type = text.trim();
+        if (hasSavedLocation(session)) {
+            session.state = 'create:location-choice';
+            sessionStore.persist();
+            await promptLocationChoice(ctx, session);
+            return;
+        }
         session.state = 'create:city';
         sessionStore.persist();
         await promptCity(ctx);
@@ -954,12 +1115,14 @@ bot.on('text', async (ctx) => {
         if (text === '/skip') {
             const data = getCreateTemp(session);
             data.city = null;
+            data.location = null;
             session.state = 'create:country';
             sessionStore.persist();
             await promptCountry(ctx);
             return;
         }
         const data = getCreateTemp(session);
+        data.location = null;
         data.city = text.trim().slice(0, 255) || null;
         session.state = 'create:country';
         sessionStore.persist();
@@ -981,6 +1144,7 @@ bot.on('text', async (ctx) => {
         }
         const data = getCreateTemp(session);
         data.country = text.trim().toUpperCase();
+        data.location = null;
         sessionStore.persist();
         await createRequestOnBackend(ctx, session);
         return;
@@ -1034,6 +1198,11 @@ bot.command('menu', async (ctx) => {
     await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
 });
 
+bot.command('setlocation', async (ctx) => {
+    const session = getSession(ctx);
+    await startSetLocationFlow(ctx, session);
+});
+
 bot.command('create_request', async (ctx) => {
     const session = ensureLoggedInSession(ctx);
     if (!session) {
@@ -1059,11 +1228,73 @@ bot.action('menu:main', async (ctx) => {
     await sendMainMenu(ctx.chat.id, { email: loggedIn.email });
 });
 
+bot.action('menu:setlocation', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = getSession(ctx);
+    await startSetLocationFlow(ctx, session);
+});
+
 bot.action('chat:exit', async (ctx) => {
     await ctx.answerCbQuery();
     const session = getSession(ctx);
     leaveChatState(session, ctx.chat?.id);
     await ctx.reply('Вы вышли из режима чата. Вернитесь к рекомендациям или в меню.', MAIN_MENU_KEYBOARD);
+});
+
+bot.action(/^geo_country_pick:(.+)$/, async (ctx) => {
+    const session = getSession(ctx);
+    const geoTemp = ensureGeoTemp(session);
+    const [, key] = ctx.match;
+    await ctx.answerCbQuery();
+    if (isGeoSelectionExpired(geoTemp.lastCountriesAt)) {
+        await ctx.reply('Selection expired, please type again');
+        return;
+    }
+    const selected = geoTemp.lastCountries?.[key];
+    if (!selected) {
+        await ctx.reply('Selection expired, please type again');
+        return;
+    }
+    geoTemp.country = selected;
+    session.state = 'WAIT_CITY_QUERY';
+    sessionStore.persist();
+    await ctx.editMessageText(`Country selected: ${selected.name} (${selected.code}). Now type a city name (min 2 chars).`);
+});
+
+bot.action(/^geo_city_pick:(.+)$/, async (ctx) => {
+    const session = getSession(ctx);
+    const geoTemp = ensureGeoTemp(session);
+    const [, key] = ctx.match;
+    await ctx.answerCbQuery();
+    if (isGeoSelectionExpired(geoTemp.lastCitiesAt)) {
+        await ctx.reply('Selection expired, please type again');
+        return;
+    }
+    const selected = geoTemp.lastCities?.[key];
+    if (!selected) {
+        await ctx.reply('Selection expired, please type again');
+        return;
+    }
+    geoTemp.city = selected;
+    session.temp.location = {
+        country: geoTemp.country,
+        city: selected,
+    };
+    session.state = null;
+    sessionStore.persist();
+    const regionPart = selected.region ? `, ${selected.region}` : '';
+    await ctx.editMessageText(`Location set: ${selected.name}${regionPart}, ${selected.countryCode} ✅`);
+});
+
+bot.action(/^geo_cancel$/, async (ctx) => {
+    const session = getSession(ctx);
+    await ctx.answerCbQuery();
+    if (session?.temp?.geo) {
+        session.temp.geo = {};
+    }
+    session.state = null;
+    sessionStore.persist();
+    await ctx.editMessageText('Cancelled.');
 });
 
 bot.action('menu:requests', async (ctx) => {
@@ -1193,6 +1424,40 @@ bot.action(/create:type:(.+)/, async (ctx) => {
     }
 
     data.type = typeValue;
+    if (hasSavedLocation(session)) {
+        session.state = 'create:location-choice';
+        sessionStore.persist();
+        await promptLocationChoice(ctx, session);
+        return;
+    }
+    session.state = 'create:city';
+    sessionStore.persist();
+    await promptCity(ctx);
+});
+
+bot.action('create:use_saved_location', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = getSession(ctx);
+    if (session.state !== 'create:location-choice') {
+        return;
+    }
+    const data = getCreateTemp(session);
+    const location = session?.temp?.location;
+    data.location = location ?? null;
+    data.city = location?.city?.name ?? null;
+    data.country = location?.country?.code ?? null;
+    sessionStore.persist();
+    await createRequestOnBackend(ctx, session);
+});
+
+bot.action('create:manual_location', async (ctx) => {
+    await ctx.answerCbQuery();
+    const session = getSession(ctx);
+    if (session.state !== 'create:location-choice') {
+        return;
+    }
+    const data = getCreateTemp(session);
+    data.location = null;
     session.state = 'create:city';
     sessionStore.persist();
     await promptCity(ctx);

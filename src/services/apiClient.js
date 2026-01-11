@@ -80,7 +80,7 @@ export class ApiClient {
         return headers;
     }
 
-    async request(method, url, data, token) {
+    async requestWithConfig(method, url, { data, params } = {}, token) {
         try {
             if (process.env.NODE_ENV !== 'production') {
                 console.log(`[api] ${String(method).toUpperCase()} ${this.buildUrl(url)}`);
@@ -89,6 +89,7 @@ export class ApiClient {
                 method,
                 url: this.buildUrl(url),
                 data,
+                params,
                 headers: this.buildHeaders(token),
                 timeout: this.timeout,
             });
@@ -97,6 +98,14 @@ export class ApiClient {
             const normalized = normalizeApiError(error);
             throw new ApiError(normalized.message, normalized.status, normalized.isAuthError);
         }
+    }
+
+    async request(method, url, data, token) {
+        return this.requestWithConfig(method, url, { data }, token);
+    }
+
+    async get(url, { params, token } = {}) {
+        return this.requestWithConfig('get', url, { params }, token);
     }
 }
 

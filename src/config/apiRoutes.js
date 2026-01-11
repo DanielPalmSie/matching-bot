@@ -18,4 +18,6 @@ export const API_ROUTES = {
     CHAT_PARTICIPANTS: (chatId) => `/api/chats/${chatId}/participants`,
     FEEDBACK_APP: '/api/feedback/app',
     FEEDBACK_MATCH: '/api/feedback/match',
+    GEO_COUNTRIES: '/api/geo/countries',
+    GEO_CITIES: '/api/geo/cities',
 };
