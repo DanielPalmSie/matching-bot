@@ -1,0 +1,14 @@
+export function createErrorHandlers({ ApiError, resolveTelegramUserId, clearSessionAuth }) {
+    async function handleApiError(ctx, session, error, fallbackMessage) {
+        if (error instanceof ApiError && error.isAuthError) {
+            const telegramUserId = resolveTelegramUserId(ctx, 'api.error.auth');
+            clearSessionAuth(session, telegramUserId);
+            await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
+            return;
+        }
+
+        await ctx.reply(error.message || fallbackMessage);
+    }
+
+    return { handleApiError };
+}
