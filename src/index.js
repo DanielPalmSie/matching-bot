@@ -313,7 +313,9 @@ async function promptTypeSelection(ctx) {
 }
 
 async function promptCity(ctx) {
-    await ctx.reply('В каком городе это актуально?\nЕсли хотите пропустить, нажмите /skip.');
+    await ctx.reply(
+        'Введите первые 2–3 буквы города — я предложу варианты. Если хотите пропустить — /skip.'
+    );
 }
 
 async function promptCountry(ctx) {
@@ -328,6 +330,16 @@ async function promptLocationChoice(ctx, session) {
         [Markup.button.callback('Ввести вручную', 'create:manual_location')],
     ]);
     await ctx.reply('Хотите использовать сохраненную локацию или указать вручную?', keyboard);
+}
+
+function startCityAutocomplete(session) {
+    const geoTemp = ensureGeoTemp(session);
+    geoTemp.lastCities = {};
+    geoTemp.city = null;
+    geoTemp.lastCitiesAt = null;
+    geoTemp.country = session?.temp?.location?.country ?? null;
+    session.state = 'WAIT_CITY_QUERY';
+    sessionStore.persist();
 }
 
 async function createRequestOnBackend(ctx, session) {
@@ -1046,8 +1058,14 @@ bot.on('text', async (ctx) => {
     if (session.state === 'WAIT_CITY_QUERY') {
         const q = text.trim();
         const geoTemp = ensureGeoTemp(session);
-        if (!geoTemp.country) {
-            await ctx.reply('Сначала выберите страну.');
+        if (q === '/skip' && session?.temp?.createRequest) {
+            const data = getCreateTemp(session);
+            data.city = null;
+            data.country = null;
+            data.location = null;
+            session.state = 'create:country';
+            sessionStore.persist();
+            await promptCountry(ctx);
             return;
         }
         if (q.length < 2) {
@@ -1055,9 +1073,11 @@ bot.on('text', async (ctx) => {
             return;
         }
         try {
-            const cities = await apiClient.get(API_ROUTES.GEO_CITIES, {
-                params: { q, country: geoTemp.country.code, limit: 10 },
-            });
+            const params = { q, limit: 10 };
+            if (geoTemp.country?.code) {
+                params.country = geoTemp.country.code;
+            }
+            const cities = await apiClient.get(API_ROUTES.GEO_CITIES, { params });
             const list = Array.isArray(cities) ? cities : [];
             if (!list.length) {
                 await ctx.reply('No cities found, try another query');
@@ -1105,8 +1125,7 @@ bot.on('text', async (ctx) => {
             await promptLocationChoice(ctx, session);
             return;
         }
-        session.state = 'create:city';
-        sessionStore.persist();
+        startCityAutocomplete(session);
         await promptCity(ctx);
         return;
     }
@@ -1276,13 +1295,27 @@ bot.action(/^geo_city_pick:(.+)$/, async (ctx) => {
         return;
     }
     geoTemp.city = selected;
+    const regionPart = selected.region ? `, ${selected.region}` : '';
+    const resolvedCountry = geoTemp.country ?? {
+        code: selected.countryCode,
+        name: selected.countryCode,
+    };
     session.temp.location = {
-        country: geoTemp.country,
+        country: resolvedCountry,
         city: selected,
     };
+    const data = session?.temp?.createRequest;
+    if (data) {
+        data.city = selected.name;
+        data.country = resolvedCountry.code ?? selected.countryCode ?? null;
+        data.location = session.temp.location;
+        sessionStore.persist();
+        await ctx.editMessageText(`Город выбран: ${selected.name}${regionPart} (${selected.countryCode}) ✅`);
+        await createRequestOnBackend(ctx, session);
+        return;
+    }
     session.state = null;
     sessionStore.persist();
-    const regionPart = selected.region ? `, ${selected.region}` : '';
     await ctx.editMessageText(`Location set: ${selected.name}${regionPart}, ${selected.countryCode} ✅`);
 });
 
@@ -1430,8 +1463,7 @@ bot.action(/create:type:(.+)/, async (ctx) => {
         await promptLocationChoice(ctx, session);
         return;
     }
-    session.state = 'create:city';
-    sessionStore.persist();
+    startCityAutocomplete(session);
     await promptCity(ctx);
 });
 
@@ -1458,8 +1490,9 @@ bot.action('create:manual_location', async (ctx) => {
     }
     const data = getCreateTemp(session);
     data.location = null;
-    session.state = 'create:city';
-    sessionStore.persist();
+    data.city = null;
+    data.country = null;
+    startCityAutocomplete(session);
     await promptCity(ctx);
 });
 
