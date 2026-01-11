@@ -5,6 +5,7 @@ import LoginMercureSubscriber from './mercure/loginSubscriber.js';
 import { getLoggedIn, setLoggedIn } from './auth/loginState.js';
 import SessionStore from './services/sessionStore.js';
 import ApiClient, { ApiError } from './services/apiClient.js';
+import GeoClient from './services/geoClient.js';
 import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
 import { getTelegramUserIdFromContext, getTokenPrefix } from './utils/telegramUserId.js';
 import { MAIN_MENU_KEYBOARD, REQUEST_TYPES, NEGATIVE_REASON_OPTIONS, GEO_SELECTION_TTL_MS } from './bot/constants.js';
@@ -32,6 +33,7 @@ if (!botToken) {
 }
 
 const apiClient = new ApiClient({ baseUrl: apiUrl });
+const geoClient = new GeoClient({ apiClient, logger });
 const sessionStore = new SessionStore();
 const bot = new Telegraf(botToken);
 let notificationService = null;
