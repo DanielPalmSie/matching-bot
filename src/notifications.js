@@ -69,11 +69,6 @@ class ChatLiveNotificationService {
         const state = this.telegramState.get(telegramChatId) || this.ensureTelegramState(telegramChatId);
         if (!payload) return;
 
-        if (payload.type === 'read') {
-            // Read events are acknowledged silently for now.
-            return;
-        }
-
         if (Number(payload.senderId) === Number(state.backendUserId)) {
             // Do not echo the sender's own messages back to them.
             return;

@@ -16,7 +16,6 @@ export function formatMatchMessage(match) {
     const lines = [
         '🔎 Рекомендация:',
         `• Описание: ${rawTextShort || '—'}`,
-        `• Тип: ${match.type ?? '—'}`,
         `• Город/страна: ${match.city ?? '—'}, ${match.country ?? '—'}`,
         `• Статус: ${match.status ?? '—'}`,
         `• Похожесть: ${formatSimilarity(match.similarity)}`,

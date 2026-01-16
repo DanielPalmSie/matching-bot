@@ -8,7 +8,7 @@ import ApiClient, { ApiError } from './services/apiClient.js';
 import GeoClient from './services/geoClient.js';
 import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
 import { getTelegramUserIdFromContext, getTokenPrefix } from './utils/telegramUserId.js';
-import { MAIN_MENU_KEYBOARD, REQUEST_TYPES, NEGATIVE_REASON_OPTIONS, GEO_SELECTION_TTL_MS } from './bot/constants.js';
+import { MAIN_MENU_KEYBOARD, NEGATIVE_REASON_OPTIONS, GEO_SELECTION_TTL_MS } from './bot/constants.js';
 import { createSessionHelpers } from './bot/session.js';
 import { createErrorHandlers } from './bot/errors.js';
 import { createAuthHandlers } from './bot/auth.js';
@@ -80,7 +80,6 @@ const requestHandlers = createRequestHandlers({
     ApiError,
     API_ROUTES,
     MAIN_MENU_KEYBOARD,
-    REQUEST_TYPES,
     handleApiError,
     ensureTelegramUserId: sessionHelpers.ensureTelegramUserId,
     clearSessionAuth: sessionHelpers.clearSessionAuth,
@@ -129,7 +128,6 @@ registerBotHandlers({
     apiClient,
     API_ROUTES,
     MAIN_MENU_KEYBOARD,
-    REQUEST_TYPES,
     NEGATIVE_REASON_OPTIONS,
     sessionStore,
     getLoggedIn,

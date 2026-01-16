@@ -6,7 +6,6 @@ export function createRequestHandlers({
     ApiError,
     API_ROUTES,
     MAIN_MENU_KEYBOARD,
-    REQUEST_TYPES,
     handleApiError,
     ensureTelegramUserId,
     clearSessionAuth,
@@ -33,13 +32,6 @@ export function createRequestHandlers({
         );
     }
 
-    async function promptTypeSelection(ctx) {
-        const keyboard = Markup.inlineKeyboard(
-            REQUEST_TYPES.map((type) => [Markup.button.callback(type, `create:type:${type}`)])
-        );
-        await ctx.reply('Выберите тип запроса (это короткий ярлык):', keyboard);
-    }
-
     async function createRequestOnBackend(ctx, session) {
         const telegramUserId = ensureTelegramUserId(ctx, 'request.create');
         if (!telegramUserId) {
@@ -48,7 +40,6 @@ export function createRequestHandlers({
         const data = getCreateTemp(session);
         const payload = {
             rawText: data.rawText,
-            type: data.type,
             city: data.city ?? null,
             country: data.country ?? null,
             location: data.location ?? null,
@@ -59,7 +50,6 @@ export function createRequestHandlers({
             const successMessage = [
                 'Готово! Ваш запрос создан 🎉',
                 `ID: ${res.id}`,
-                `Тип: ${res.type}`,
                 `Город: ${res.city || 'не указан'}`,
                 `Статус: ${res.status}`,
                 '',
@@ -122,7 +112,6 @@ export function createRequestHandlers({
         resetCreateRequestState,
         getCreateTemp,
         startCreateRequestFlow,
-        promptTypeSelection,
         createRequestOnBackend,
         loadRequests,
     };
