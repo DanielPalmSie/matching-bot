@@ -32,7 +32,6 @@ export class LoginMercureSubscriber {
 
 
     handlePayload(subscriptionKey, payload, topic) {
-        const type = payload?.type;
         const telegramUserId = getTelegramUserIdFromPayload(payload);
         const payloadChatId = payload.chat_id ?? payload.chatId ?? payload.telegram_chat_id;
         const resolvedTelegramUserId = telegramUserId ?? (payloadChatId ? String(payloadChatId) : null);
@@ -43,7 +42,6 @@ export class LoginMercureSubscriber {
             });
         }
         logger.info('mercure.login.event', {
-            type,
             telegramUserId: resolvedTelegramUserId,
             chatId: payloadChatId ?? null,
             hasJwt: !!payload?.jwt,
@@ -51,7 +49,7 @@ export class LoginMercureSubscriber {
         });
         console.log('[Mercure] handlePayload called for subscription', subscriptionKey, 'payload:', payload);
 
-        if (!payload || !payload.type) {
+        if (!payload) {
             console.log('[Mercure] Invalid payload, skipping');
             return;
         }
@@ -61,55 +59,32 @@ export class LoginMercureSubscriber {
             return;
         }
 
-        if (payload.type === 'login_success') {
-            console.log('[Mercure] BOT LOGIN EVENT', {
-                telegramUserId: String(subscriptionKey),
-                chatId: payloadChatId ?? null,
-                topic,
-                hasJwt: !!payload.jwt,
-            });
+        console.log('[Mercure] BOT LOGIN EVENT', {
+            telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
+            chatId: String(payloadChatId || ''),
+            backendUserId: payload.user_id ?? payload.userId ?? null,
+            email: payload.email ?? null,
+            timestamp: new Date().toISOString(),
+        });
 
-            if (!payload.jwt) {
-                console.warn('[Mercure] login_success event without jwt, skipping');
-                return;
-            }
-
-            console.log('[Mercure] BOT LOGIN STATE UPDATE', { telegramUserId: String(subscriptionKey) });
-
-            if (typeof this.onUserLoggedIn === 'function') {
-                this.onUserLoggedIn({
-                    telegramUserId: String(subscriptionKey),
-                    chatId: payloadChatId ? String(payloadChatId) : null,
-                    jwt: payload.jwt,
-                    email: payload.email,
-                    userId: payload.user_id ?? payload.userId,
-                });
-            }
-
-            console.log('[Mercure] BOT SEND MENU DONE', { telegramUserId: String(subscriptionKey) });
+        if (!payload.jwt) {
+            console.warn('[Mercure] login event without jwt, skipping');
             return;
         }
 
-        if (payload.type === 'user_logged_in') {
-            console.log('[Mercure] user_logged_in event received for telegramUserId', subscriptionKey);
-            console.log('BOT LOGIN EVENT', {
-                telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
-                chatId: String(payloadChatId || ''),
-                backendUserId: payload.user_id ?? payload.userId ?? null,
-                email: payload.email ?? null,
-                timestamp: new Date().toISOString(),
-            });
+        console.log('[Mercure] BOT LOGIN STATE UPDATE', { telegramUserId: String(subscriptionKey) });
 
-            if (typeof this.onUserLoggedIn === 'function') {
-                this.onUserLoggedIn({
-                    telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
-                    chatId: payloadChatId ? String(payloadChatId) : null,
-                    userId: payload.user_id ?? payload.userId,
-                    email: payload.email,
-                    jwt: payload.jwt,
-                });
-            }
+        if (typeof this.onUserLoggedIn === 'function') {
+            this.onUserLoggedIn({
+                telegramUserId: String(resolvedTelegramUserId || subscriptionKey),
+                chatId: payloadChatId ? String(payloadChatId) : null,
+                jwt: payload.jwt,
+                email: payload.email,
+                userId: payload.user_id ?? payload.userId,
+            });
         }
+
+        console.log('[Mercure] BOT SEND MENU DONE', { telegramUserId: String(subscriptionKey) });
     }
 
     stop() {

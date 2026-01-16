@@ -6,7 +6,6 @@ export function registerBotHandlers({
     apiClient,
     API_ROUTES,
     MAIN_MENU_KEYBOARD,
-    REQUEST_TYPES,
     NEGATIVE_REASON_OPTIONS,
     sessionStore,
     getLoggedIn,
@@ -42,7 +41,6 @@ export function registerBotHandlers({
         resetCreateRequestState,
         getCreateTemp,
         startCreateRequestFlow,
-        promptTypeSelection,
         createRequestOnBackend,
         loadRequests,
     } = requestHandlers;
@@ -268,19 +266,6 @@ export function registerBotHandlers({
             }
             const data = getCreateTemp(session);
             data.rawText = text;
-            session.state = 'create:type';
-            sessionStore.persist();
-            await promptTypeSelection(ctx);
-            return;
-        }
-
-        if (session.state === 'create:type-custom') {
-            if (!text || text.length > 50) {
-                await ctx.reply('Название типа должно быть от 1 до 50 символов. Попробуйте снова.');
-                return;
-            }
-            const data = getCreateTemp(session);
-            data.type = text.trim();
             startLocationSelection(session);
             await promptCountryQuery(ctx);
             return;
@@ -548,31 +533,6 @@ export function registerBotHandlers({
             return;
         }
         await startCreateRequestFlow(ctx, session);
-    });
-
-    bot.action(/create:type:(.+)/, async (ctx) => {
-        await ctx.answerCbQuery();
-        const session = getSession(ctx);
-        if (session.state !== 'create:type') {
-            return;
-        }
-        const [, typeValue] = ctx.match;
-        if (!REQUEST_TYPES.includes(typeValue)) {
-            await ctx.reply('Неизвестный тип запроса. Попробуйте снова.');
-            return;
-        }
-
-        const data = getCreateTemp(session);
-        if (typeValue === 'other') {
-            session.state = 'create:type-custom';
-            sessionStore.persist();
-            await ctx.reply('Напишите короткое название типа, например: “language_exchange”');
-            return;
-        }
-
-        data.type = typeValue;
-        startLocationSelection(session);
-        await promptCountryQuery(ctx);
     });
 
     bot.action(/^feedback:like:([^:]+):([^:]+)$/, async (ctx) => {

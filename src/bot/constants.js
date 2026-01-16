@@ -6,8 +6,6 @@ export const MAIN_MENU_KEYBOARD = Markup.inlineKeyboard([
     [Markup.button.callback('Мои чаты', 'menu:chats')],
 ]);
 
-export const REQUEST_TYPES = ['mentorship', 'travel', 'dating', 'help', 'other'];
-
 export const NEGATIVE_REASON_OPTIONS = [
     { code: 'not_relevant', label: '❌ Не по смыслу' },
     { code: 'too_far', label: '📍 Слишком далеко' },

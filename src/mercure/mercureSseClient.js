@@ -197,7 +197,7 @@ export class MercureSseClient extends EventEmitter {
         try {
             const payload = JSON.parse(dataString);
             console.log('BOT EVENT RECEIVED', {
-                eventType: eventType || payload?.type || null,
+                eventType: eventType || null,
                 rawData: dataString,
                 topics,
                 timestamp: new Date().toISOString(),
