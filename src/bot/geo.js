@@ -29,6 +29,9 @@ export function createGeoHelpers({ sessionStore, ApiError, GEO_SELECTION_TTL_MS 
         geoTemp.lastCities = {};
         geoTemp.country = null;
         geoTemp.city = null;
+        geoTemp.q = null;
+        geoTemp.limit = 10;
+        geoTemp.offset = 0;
         geoTemp.lastCountriesAt = null;
         geoTemp.lastCitiesAt = null;
         session.state = 'WAIT_COUNTRY_QUERY';
@@ -51,7 +54,11 @@ export function createGeoHelpers({ sessionStore, ApiError, GEO_SELECTION_TTL_MS 
         return { keyboard: Markup.inlineKeyboard(rows), mapping };
     }
 
-    function buildGeoCitiesKeyboard(cities, callbackPrefix = 'geo_city_pick') {
+    function buildGeoCitiesKeyboard(
+        cities,
+        { offset = 0, hasMore = false } = {},
+        callbackPrefix = 'geo_city_pick'
+    ) {
         const mapping = {};
         const rows = cities.map((city, index) => {
             const key = String(index + 1);
@@ -67,7 +74,16 @@ export function createGeoHelpers({ sessionStore, ApiError, GEO_SELECTION_TTL_MS 
             const label = `${city.name}${regionPart} (${city.countryCode})`;
             return [Markup.button.callback(label, `${callbackPrefix}:${key}`)];
         });
-        rows.push([Markup.button.callback('Отмена', 'geo_cancel')]);
+        const paginationRow = [];
+        if (offset > 0) {
+            paginationRow.push(Markup.button.callback('⬅️ Prev', 'geo_city_page:prev'));
+        }
+        if (hasMore) {
+            paginationRow.push(Markup.button.callback('➡️ Next', 'geo_city_page:next'));
+        }
+        if (paginationRow.length) {
+            rows.push(paginationRow);
+        }
         return { keyboard: Markup.inlineKeyboard(rows), mapping };
     }
 

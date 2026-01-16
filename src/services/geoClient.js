@@ -28,16 +28,21 @@ class GeoClient {
         }
     }
 
-    async searchCities(query, countryCode, limit = 10) {
-        if (!query || query.length < 2 || !countryCode) {
-            return { items: [], error: null };
+    async searchCities({ q, country, limit = 10, offset = 0 } = {}) {
+        const safeLimit = Math.min(Math.max(limit ?? 10, 1), 10);
+        const safeOffset = Math.max(offset ?? 0, 0);
+        if (!q || q.length < 2 || !country) {
+            return { items: [], limit: safeLimit, offset: safeOffset, hasMore: false, error: null };
         }
-        const params = { q: query, country: countryCode, limit: Math.min(limit, 10) };
+        const params = { q, country, limit: safeLimit, offset: safeOffset };
         try {
             const data = await this.apiClient.get(API_ROUTES.GEO_CITIES, { params, timeout: this.timeout });
-            const items = Array.isArray(data) ? data : [];
+            const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+            const resolvedLimit = Number.isInteger(data?.limit) ? data.limit : safeLimit;
+            const resolvedOffset = Number.isInteger(data?.offset) ? data.offset : safeOffset;
+            const hasMore = data?.hasMore === true;
             this.logger.info('geo.cities', { endpoint: API_ROUTES.GEO_CITIES, params, results: items.length });
-            return { items, error: null };
+            return { items, limit: resolvedLimit, offset: resolvedOffset, hasMore, error: null };
         } catch (error) {
             this.logger.warn('geo.cities.failed', {
                 endpoint: API_ROUTES.GEO_CITIES,
@@ -45,7 +50,7 @@ class GeoClient {
                 status: error?.status ?? null,
                 message: error?.message ?? null,
             });
-            return { items: [], error };
+            return { items: [], limit: safeLimit, offset: safeOffset, hasMore: false, error };
         }
     }
 }
