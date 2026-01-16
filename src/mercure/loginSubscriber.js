@@ -120,4 +120,3 @@ export class LoginMercureSubscriber {
 }
 
 export default LoginMercureSubscriber;
-//
