@@ -225,15 +225,27 @@ export function registerBotHandlers({
                 await ctx.reply('Введите минимум 2 буквы.');
                 return;
             }
+            geoTemp.q = q;
+            geoTemp.limit = 10;
+            geoTemp.offset = 0;
+            sessionStore.persist();
             try {
-                const params = { q, limit: 10, country: geoTemp.country.code };
-                const cities = await apiClient.get(API_ROUTES.GEO_CITIES, { params });
-                const list = Array.isArray(cities) ? cities : [];
+                const limit = 10;
+                const offset = 0;
+                const params = { q, limit, offset, country: geoTemp.country.code };
+                const payload = await apiClient.get(API_ROUTES.GEO_CITIES, { params });
+                const list = Array.isArray(payload?.items) ? payload.items : [];
+                const hasMore = payload?.hasMore === true;
+                const resolvedOffset = Number.isInteger(payload?.offset) ? payload.offset : offset;
+                const resolvedLimit = Number.isInteger(payload?.limit) ? payload.limit : limit;
                 if (!list.length) {
                     await ctx.reply('Города не найдены. Попробуйте другие буквы (латиницей), например: ber, mun, par.');
                     return;
                 }
-                const { keyboard, mapping } = buildGeoCitiesKeyboard(list.slice(0, 10));
+                const { keyboard, mapping } = buildGeoCitiesKeyboard(list, { offset: resolvedOffset, hasMore });
+                geoTemp.q = q;
+                geoTemp.limit = resolvedLimit;
+                geoTemp.offset = resolvedOffset;
                 geoTemp.lastCities = mapping;
                 geoTemp.lastCitiesAt = Date.now();
                 sessionStore.persist();
@@ -369,12 +381,61 @@ export function registerBotHandlers({
             return;
         }
         geoTemp.country = selected;
+        geoTemp.q = null;
+        geoTemp.limit = 10;
+        geoTemp.offset = 0;
+        geoTemp.lastCities = {};
+        geoTemp.lastCitiesAt = null;
         session.state = 'WAIT_CITY_QUERY';
         sessionStore.persist();
         await ctx.editMessageText(
             `Страна выбрана: ${selected.name} (${selected.code}).`
         );
         await promptCityQuery(ctx, selected.name);
+    });
+
+    bot.action(/^geo_city_page:(prev|next)$/, async (ctx) => {
+        const session = getSession(ctx);
+        const geoTemp = ensureGeoTemp(session);
+        const [, direction] = ctx.match;
+        if (!geoTemp.country?.code || !geoTemp.q) {
+            await ctx.answerCbQuery('Сначала введите запрос.');
+            return;
+        }
+        if (isGeoSelectionExpired(geoTemp.lastCitiesAt)) {
+            await ctx.answerCbQuery('Выбор устарел, введите запрос ещё раз.');
+            return;
+        }
+        const limit = Math.min(Math.max(geoTemp.limit ?? 10, 1), 10);
+        const currentOffset = Math.max(geoTemp.offset ?? 0, 0);
+        const newOffset = direction === 'prev' ? Math.max(0, currentOffset - limit) : currentOffset + limit;
+        try {
+            const params = { q: geoTemp.q, limit, offset: newOffset, country: geoTemp.country.code };
+            const payload = await apiClient.get(API_ROUTES.GEO_CITIES, { params });
+            const list = Array.isArray(payload?.items) ? payload.items : [];
+            const hasMore = payload?.hasMore === true;
+            const resolvedOffset = Number.isInteger(payload?.offset) ? payload.offset : newOffset;
+            const resolvedLimit = Number.isInteger(payload?.limit) ? payload.limit : limit;
+            if (!list.length) {
+                await ctx.answerCbQuery('Больше результатов нет');
+                return;
+            }
+            const { keyboard, mapping } = buildGeoCitiesKeyboard(list, { offset: resolvedOffset, hasMore });
+            geoTemp.lastCities = mapping;
+            geoTemp.lastCitiesAt = Date.now();
+            geoTemp.offset = resolvedOffset;
+            geoTemp.limit = resolvedLimit;
+            sessionStore.persist();
+            await ctx.answerCbQuery();
+            await ctx.editMessageText('Выберите город:', keyboard);
+        } catch (error) {
+            if (isGeoServiceUnavailable(error)) {
+                await ctx.answerCbQuery('Сервис геолокации временно недоступен');
+                return;
+            }
+            console.error('Failed to load cities page', error);
+            await ctx.answerCbQuery('Не удалось получить список городов');
+        }
     });
 
     bot.action(/^geo_city_pick:(.+)$/, async (ctx) => {
