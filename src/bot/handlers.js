@@ -488,7 +488,7 @@ export function registerBotHandlers({
         if (!session) return;
         const payload = session?.lastRecommendations?.[matchKey];
         if (!payload) {
-            await ctx.reply('Контекст устарел, откройте рекомендации заново');
+            await ctx.reply('Контекст устарел, открой рекомендации заново.');
             return;
         }
         const { ownerId, targetRequestId, contextTitle, contextSubtitle } = payload;
