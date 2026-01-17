@@ -58,9 +58,9 @@ export function createMatchHandlers({
         ];
 
         if (showContactButton) {
-            const contextTitle = match?.description ?? null;
+            const contextTitle = match?.description ?? match?.request?.rawText ?? '';
             const subtitleParts = [match?.city, match?.country].filter(Boolean);
-            const contextSubtitle = subtitleParts.length ? subtitleParts.join(', ') : null;
+            const contextSubtitle = subtitleParts.length ? subtitleParts.join(', ') : '';
             session.lastRecommendations = session.lastRecommendations || {};
             session.lastRecommendations[matchKey] = {
                 ownerId,
@@ -132,6 +132,32 @@ export function createMatchHandlers({
 
     function getPendingFeedbackComment(session) {
         return session?.temp?.feedback?.awaitingComment;
+    }
+
+    function normalizeContextString(value) {
+        if (value === null || value === undefined) {
+            return null;
+        }
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            return trimmed.length ? trimmed : null;
+        }
+        if (typeof value === 'object') {
+            return null;
+        }
+        const stringValue = String(value).trim();
+        return stringValue.length ? stringValue : null;
+    }
+
+    function buildStartChatOrigin(targetRequestId) {
+        if (targetRequestId === null || targetRequestId === undefined || targetRequestId === '') {
+            return null;
+        }
+        const parsedOriginId = toNumberOrNull(targetRequestId);
+        return {
+            originType: 'request',
+            originId: parsedOriginId ?? targetRequestId,
+        };
     }
 
     function buildFeedbackPayload(session, { matchId = null, targetRequestId = null, relevanceScore, reasonCode = null, comment = null }) {
@@ -226,12 +252,41 @@ export function createMatchHandlers({
         }
 
         try {
-            const body = {
-                originType: 'request',
-                originId: typeof targetRequestId === 'number' && !Number.isNaN(targetRequestId) ? targetRequestId : null,
-                contextTitle: contextTitle ?? null,
-                contextSubtitle: contextSubtitle ?? null,
-            };
+            const titleRaw = contextTitle ?? null;
+            const subtitleRaw = contextSubtitle ?? null;
+            const title = normalizeContextString(titleRaw);
+            const subtitle = normalizeContextString(subtitleRaw);
+            const body = {};
+            const origin = buildStartChatOrigin(targetRequestId);
+            if (origin) {
+                Object.assign(body, origin);
+            }
+            if (title !== null) {
+                body.contextTitle = title;
+            }
+            if (subtitle !== null) {
+                body.contextSubtitle = subtitle;
+            }
+
+            const safeTitleRaw =
+                typeof titleRaw === 'string' && titleRaw.length <= 200 ? titleRaw : typeof titleRaw === 'string' ? '[long]' : titleRaw;
+
+            const safeTitle =
+                typeof title === 'string' && title.length <= 200 ? title : typeof title === 'string' ? '[long]' : title;
+
+            console.log('[startChat] payload', {
+                ownerId,
+                targetRequestId,
+                titleType: typeof titleRaw,
+                titleRaw: safeTitleRaw,
+                title: safeTitle,
+                titleLen: title?.length ?? null,
+                subtitleType: typeof subtitleRaw,
+                subtitleLen: subtitle?.length ?? null,
+                hasTitle: Boolean(title),
+                hasSubtitle: Boolean(subtitle),
+                bodyKeys: Object.keys(body),
+            });
             const chat = await apiRequest('post', API_ROUTES.CHATS_START(ownerId), body, session.token);
             if (!chat?.id) {
                 await ctx.reply('Не удалось создать чат, попробуйте позже.');
