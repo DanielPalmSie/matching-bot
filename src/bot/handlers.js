@@ -481,31 +481,18 @@ export function registerBotHandlers({
         await loadMatchesForRequest(ctx, session, requestId);
     });
 
-    bot.action(/^contact_author:([^:]+):([^:]+)$/, async (ctx) => {
+    bot.action(/^contact_author:(.+)$/, async (ctx) => {
         await ctx.answerCbQuery();
-        const [, requestIdRaw, ownerIdRaw] = ctx.match;
-        if (ownerIdRaw === 'null') {
-            await ctx.reply('Не удалось определить автора заявки.');
-            return;
-        }
-        const ownerId = Number(ownerIdRaw);
-        if (Number.isNaN(ownerId)) {
-            await ctx.reply('Не удалось определить автора заявки.');
-            return;
-        }
-        let targetRequestId = null;
-        if (requestIdRaw !== 'null') {
-            const parsedRequestId = Number(requestIdRaw);
-            if (Number.isNaN(parsedRequestId)) {
-                await ctx.reply('Не удалось определить заявку.');
-                return;
-            }
-            targetRequestId = parsedRequestId;
-        }
+        const [, matchKey] = ctx.match;
         const session = ensureLoggedInSession(ctx);
         if (!session) return;
-
-        await startChatWithAuthor(ctx, session, ownerId, targetRequestId);
+        const payload = session?.lastRecommendations?.[matchKey];
+        if (!payload) {
+            await ctx.reply('Контекст устарел, откройте рекомендации заново');
+            return;
+        }
+        const { ownerId, targetRequestId, contextTitle, contextSubtitle } = payload;
+        await startChatWithAuthor(ctx, session, ownerId, targetRequestId, contextTitle, contextSubtitle);
     });
 
     bot.action('menu:chats', async (ctx) => {

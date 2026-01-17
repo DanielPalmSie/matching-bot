@@ -28,17 +28,27 @@ export function createMatchHandlers({
         return `feedback:${type}:${matchId}:${requestId}`;
     }
 
-    function buildContactAuthorCallback(targetRequestId, ownerId) {
-        const requestPart =
-            typeof targetRequestId === 'number' && targetRequestId > 0 ? String(targetRequestId) : 'null';
+    function buildContactAuthorCallback(matchKey) {
+        return `contact_author:${matchKey}`;
+    }
+
+    function buildMatchKey(match, targetRequestId, ownerId) {
+        const matchId = match?.id ?? match?.matchId;
+        if (matchId !== undefined && matchId !== null && matchId !== '') {
+            return String(matchId);
+        }
+        const createdAt = match?.createdAt ?? match?.created_at ?? match?.created;
+        const requestPart = targetRequestId ?? 'null';
         const ownerPart = ownerId ?? 'null';
-        return `contact_author:${requestPart}:${ownerPart}`;
+        const createdPart = createdAt ?? 'null';
+        return `${requestPart}:${ownerPart}:${createdPart}`;
     }
 
     async function sendRecommendation(ctx, match, targetRequestId, session) {
         const ownerId = extractOwnerId(match);
         const isOwnRequest = ownerId && session?.backendUserId && Number(ownerId) === Number(session.backendUserId);
         const showContactButton = !!ownerId && !isOwnRequest;
+        const matchKey = buildMatchKey(match, targetRequestId, ownerId);
 
         const rows = [
             [
@@ -48,7 +58,18 @@ export function createMatchHandlers({
         ];
 
         if (showContactButton) {
-            rows.push([Markup.button.callback('✉️ Связаться с автором', buildContactAuthorCallback(targetRequestId, ownerId))]);
+            const contextTitle = match?.description ?? null;
+            const subtitleParts = [match?.city, match?.country].filter(Boolean);
+            const contextSubtitle = subtitleParts.length ? subtitleParts.join(', ') : null;
+            session.lastRecommendations = session.lastRecommendations || {};
+            session.lastRecommendations[matchKey] = {
+                ownerId,
+                targetRequestId: toNumberOrNull(targetRequestId),
+                contextTitle,
+                contextSubtitle,
+            };
+            sessionStore.persist();
+            rows.push([Markup.button.callback('✉️ Связаться с автором', buildContactAuthorCallback(matchKey))]);
         }
 
         rows.push([Markup.button.callback('⬅️ В меню', 'menu:main')]);
@@ -193,7 +214,7 @@ export function createMatchHandlers({
         }
     }
 
-    async function startChatWithAuthor(ctx, session, ownerId, targetRequestId) {
+    async function startChatWithAuthor(ctx, session, ownerId, targetRequestId, contextTitle, contextSubtitle) {
         if (!ownerId) {
             await ctx.reply('Не удалось определить автора заявки.');
             return;
@@ -205,10 +226,12 @@ export function createMatchHandlers({
         }
 
         try {
-            const body =
-                typeof targetRequestId === 'number' && !Number.isNaN(targetRequestId)
-                    ? { originType: 'request', originId: targetRequestId }
-                    : {};
+            const body = {
+                originType: 'request',
+                originId: typeof targetRequestId === 'number' && !Number.isNaN(targetRequestId) ? targetRequestId : null,
+                contextTitle: contextTitle ?? null,
+                contextSubtitle: contextSubtitle ?? null,
+            };
             const chat = await apiRequest('post', API_ROUTES.CHATS_START(ownerId), body, session.token);
             if (!chat?.id) {
                 await ctx.reply('Не удалось создать чат, попробуйте позже.');
