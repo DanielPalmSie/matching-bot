@@ -56,7 +56,6 @@ export function registerBotHandlers({
         submitMatchFeedback,
         loadMatchesForRequest,
         startChatWithAuthor,
-        toNumberOrNull,
     } = matchHandlers;
 
     const { loadChats, showChat, sendMessageToChat } = chatHandlers;
@@ -484,12 +483,29 @@ export function registerBotHandlers({
 
     bot.action(/^contact_author:([^:]+):([^:]+)$/, async (ctx) => {
         await ctx.answerCbQuery();
-        const [, , ownerIdRaw] = ctx.match;
-        const ownerId = toNumberOrNull(ownerIdRaw);
+        const [, requestIdRaw, ownerIdRaw] = ctx.match;
+        if (ownerIdRaw === 'null') {
+            await ctx.reply('Не удалось определить автора заявки.');
+            return;
+        }
+        const ownerId = Number(ownerIdRaw);
+        if (Number.isNaN(ownerId)) {
+            await ctx.reply('Не удалось определить автора заявки.');
+            return;
+        }
+        let targetRequestId = null;
+        if (requestIdRaw !== 'null') {
+            const parsedRequestId = Number(requestIdRaw);
+            if (Number.isNaN(parsedRequestId)) {
+                await ctx.reply('Не удалось определить заявку.');
+                return;
+            }
+            targetRequestId = parsedRequestId;
+        }
         const session = ensureLoggedInSession(ctx);
         if (!session) return;
 
-        await startChatWithAuthor(ctx, session, ownerId, null);
+        await startChatWithAuthor(ctx, session, ownerId, targetRequestId);
     });
 
     bot.action('menu:chats', async (ctx) => {
