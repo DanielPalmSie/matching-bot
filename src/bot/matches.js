@@ -258,6 +258,8 @@ export function createMatchHandlers({
             const subtitle = normalizeContextString(subtitleRaw);
             const body = {};
             const origin = buildStartChatOrigin(targetRequestId);
+            const originType = origin?.originType ?? null;
+            const originId = origin?.originId ?? null;
             if (origin) {
                 Object.assign(body, origin);
             }
@@ -277,10 +279,16 @@ export function createMatchHandlers({
             console.log('[startChat] payload', {
                 ownerId,
                 targetRequestId,
+                originType,
+                originId,
+                originIdType: typeof originId,
+                contextTitleType: typeof titleRaw,
                 titleType: typeof titleRaw,
                 titleRaw: safeTitleRaw,
                 title: safeTitle,
                 titleLen: title?.length ?? null,
+                contextTitleLen: title?.length ?? null,
+                hasContextTitle: Boolean(title),
                 subtitleType: typeof subtitleRaw,
                 subtitleLen: subtitle?.length ?? null,
                 hasTitle: Boolean(title),

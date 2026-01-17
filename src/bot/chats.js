@@ -32,8 +32,33 @@ export function createChatHandlers({
             return;
         }
         try {
-            const chats = await apiRequest('get', API_ROUTES.CHATS_LIST, null, session.token);
-            const chatList = Array.isArray(chats) ? chats : chats?.items || [];
+            const response = await apiRequest('get', API_ROUTES.CHATS_LIST, null, session.token);
+            const isArrayResponse = Array.isArray(response);
+            const responseKeys = response && !isArrayResponse ? Object.keys(response) : [];
+            const chatList = isArrayResponse ? response : response?.items || [];
+            const sampleChats = chatList.slice(0, 2);
+            const safePreview = (value) => {
+                if (value === null || value === undefined) return value;
+                const text = String(value);
+                if (text.length <= 32) return text;
+                return `${text.slice(0, 29)}...`;
+            };
+            const samplePreview = sampleChats.map((chat) => ({
+                id: chat?.id ?? null,
+                title: safePreview(chat?.title),
+                name: safePreview(chat?.name),
+                subtitle: safePreview(chat?.subtitle),
+                context: chat?.context ? Object.keys(chat.context) : null,
+                keys: chat ? Object.keys(chat) : [],
+            }));
+            console.log('[loadChats] response audit', {
+                responseType: typeof response,
+                isArrayResponse,
+                responseKeys,
+                chatCount: chatList.length,
+                samplePreview,
+                chatIds: chatList.map((chat) => chat?.id),
+            });
             if (!chatList.length) {
                 await ctx.reply('Чатов пока нет.');
                 return;
