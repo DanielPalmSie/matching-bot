@@ -58,7 +58,7 @@ export function createMatchHandlers({
         ];
 
         if (showContactButton) {
-            const contextTitle = match?.description ?? match?.request?.rawText ?? '';
+            const contextTitle = match?.description ?? '';
             const subtitleParts = [match?.city, match?.country].filter(Boolean);
             const contextSubtitle = subtitleParts.length ? subtitleParts.join(', ') : '';
             session.lastRecommendations = session.lastRecommendations || {};
@@ -256,16 +256,12 @@ export function createMatchHandlers({
             const subtitleRaw = contextSubtitle ?? null;
             const title = normalizeContextString(titleRaw);
             const subtitle = normalizeContextString(subtitleRaw);
-            const body = {};
-            const origin = buildStartChatOrigin(targetRequestId);
-            if (origin) {
-                Object.assign(body, origin);
+            const body = buildStartChatOrigin(targetRequestId) ?? {};
+            if (typeof title === 'string' && title.trim() !== '') {
+                body.contextTitle = title.trim();
             }
-            if (title !== null) {
-                body.contextTitle = title;
-            }
-            if (subtitle !== null) {
-                body.contextSubtitle = subtitle;
+            if (typeof subtitle === 'string' && subtitle.trim() !== '') {
+                body.contextSubtitle = subtitle.trim();
             }
 
             const safeTitleRaw =
