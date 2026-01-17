@@ -8,7 +8,6 @@ export function createRequestHandlers({
     MAIN_MENU_KEYBOARD,
     handleApiError,
     ensureTelegramUserId,
-    clearSessionAuth,
     formatRequestSummary,
 }) {
     function resetCreateRequestState(session) {
@@ -33,8 +32,7 @@ export function createRequestHandlers({
     }
 
     async function createRequestOnBackend(ctx, session) {
-        const telegramUserId = ensureTelegramUserId(ctx, 'request.create');
-        if (!telegramUserId) {
+        if (!ensureTelegramUserId(ctx, 'request.create')) {
             return;
         }
         const data = getCreateTemp(session);
@@ -67,17 +65,13 @@ export function createRequestHandlers({
                 resetCreateRequestState(session);
                 return;
             }
-            if (error instanceof ApiError && error.isAuthError) {
-                clearSessionAuth(session, telegramUserId);
-                resetCreateRequestState(session);
-                await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите заново.', MAIN_MENU_KEYBOARD);
-                return;
-            }
-            await ctx.reply(
-                'Произошла техническая ошибка при создании запроса. Попробуйте ещё раз позже.',
-                MAIN_MENU_KEYBOARD
-            );
             resetCreateRequestState(session);
+            await handleApiError(
+                ctx,
+                session,
+                error,
+                'Произошла техническая ошибка при создании запроса. Попробуйте ещё раз позже.'
+            );
         }
     }
 

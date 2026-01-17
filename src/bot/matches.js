@@ -7,7 +7,6 @@ export function createMatchHandlers({
     NEGATIVE_REASON_OPTIONS,
     handleApiError,
     ensureTelegramUserId,
-    clearSessionAuth,
     formatMatchMessage,
     sessionStore,
     enterChatState,
@@ -130,8 +129,7 @@ export function createMatchHandlers({
     }
 
     async function loadMatchesForRequest(ctx, session, requestId) {
-        const telegramUserId = ensureTelegramUserId(ctx, 'matches.load');
-        if (!telegramUserId) {
+        if (!ensureTelegramUserId(ctx, 'matches.load')) {
             return;
         }
         try {
@@ -168,14 +166,8 @@ export function createMatchHandlers({
                     await ctx.reply('Запрос не найден или более не существует.');
                     return;
                 }
-                if (error.isAuthError) {
-                    clearSessionAuth(session, telegramUserId);
-                    await ctx.reply('Ваша сессия истекла. Пожалуйста, войдите снова через ссылку из письма.');
-                    return;
-                }
             }
-
-            await ctx.reply('Не удалось загрузить рекомендации. Попробуйте позже.');
+            await handleApiError(ctx, session, error, 'Не удалось загрузить рекомендации. Попробуйте позже.');
         }
     }
 
@@ -238,17 +230,11 @@ export function createMatchHandlers({
 
             await ctx.reply('Чат с автором создан, напиши своё первое сообщение.', keyboard);
         } catch (error) {
-            if (error instanceof ApiError && error.status === 401) {
-                const telegramUserId = ensureTelegramUserId(ctx, 'chats.start.auth');
-                clearSessionAuth(session, telegramUserId);
-                await ctx.reply('Ваша сессия истекла. Нажмите кнопку входа, чтобы авторизоваться снова.');
-                return;
-            }
             if (error instanceof ApiError && error.status === 404) {
                 await ctx.reply('Автор заявки не найден.');
                 return;
             }
-            await ctx.reply('Не удалось создать чат, попробуйте позже.');
+            await handleApiError(ctx, session, error, 'Не удалось создать чат, попробуйте позже.');
         }
     }
 
