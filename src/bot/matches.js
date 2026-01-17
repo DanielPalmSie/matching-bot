@@ -29,7 +29,8 @@ export function createMatchHandlers({
     }
 
     function buildContactAuthorCallback(targetRequestId, ownerId) {
-        const requestPart = targetRequestId ?? 'null';
+        const requestPart =
+            typeof targetRequestId === 'number' && targetRequestId > 0 ? String(targetRequestId) : 'null';
         const ownerPart = ownerId ?? 'null';
         return `contact_author:${requestPart}:${ownerPart}`;
     }
@@ -204,7 +205,11 @@ export function createMatchHandlers({
         }
 
         try {
-            const chat = await apiRequest('post', API_ROUTES.CHATS_START(ownerId), {}, session.token);
+            const body =
+                typeof targetRequestId === 'number' && !Number.isNaN(targetRequestId)
+                    ? { originType: 'request', originId: targetRequestId }
+                    : {};
+            const chat = await apiRequest('post', API_ROUTES.CHATS_START(ownerId), body, session.token);
             if (!chat?.id) {
                 await ctx.reply('Не удалось создать чат, попробуйте позже.');
                 return;
@@ -212,15 +217,22 @@ export function createMatchHandlers({
 
             enterChatState(session, ctx.chat?.id, chat.id);
 
-            try {
-                await apiRequest(
-                    'post',
-                    API_ROUTES.CHAT_SEND_MESSAGE(chat.id),
-                    { content: 'Привет! Я нашёл твою заявку в матчинге и хотел(а) бы обсудить её 🙂' },
-                    session.token
-                );
-            } catch (sendError) {
-                console.error('Failed to send intro message to chat', sendError);
+            if (!session.sentIntroByChatId) {
+                session.sentIntroByChatId = {};
+            }
+            if (!session.sentIntroByChatId[chat.id]) {
+                try {
+                    await apiRequest(
+                        'post',
+                        API_ROUTES.CHAT_SEND_MESSAGE(chat.id),
+                        { content: 'Привет! Я нашёл твою заявку в матчинге и хотел(а) бы обсудить её 🙂' },
+                        session.token
+                    );
+                    session.sentIntroByChatId[chat.id] = true;
+                    sessionStore.persist();
+                } catch (sendError) {
+                    console.error('Failed to send intro message to chat', sendError);
+                }
             }
 
             const keyboard = Markup.inlineKeyboard([

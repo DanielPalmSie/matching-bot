@@ -10,6 +10,22 @@ export function createChatHandlers({
     leaveChatState,
     sessionStore,
 }) {
+    const MAX_CHAT_TITLE_LENGTH = 48;
+
+    function truncateChatTitle(value) {
+        if (!value) return value;
+        const text = String(value).trim();
+        if (text.length <= MAX_CHAT_TITLE_LENGTH) {
+            return text;
+        }
+        return `${text.slice(0, MAX_CHAT_TITLE_LENGTH - 1)}…`;
+    }
+
+    function findChatMetadata(session, chatId) {
+        const cachedChats = Array.isArray(session.chatCache) ? session.chatCache : [];
+        return cachedChats.find((chat) => String(chat?.id) === String(chatId)) || null;
+    }
+
     async function loadChats(ctx, session) {
         const telegramUserId = ensureTelegramUserId(ctx, 'chats.load');
         if (!telegramUserId) {
@@ -24,7 +40,13 @@ export function createChatHandlers({
             }
             session.chatCache = chatList;
             sessionStore.persist();
-            const keyboard = chatList.map((c) => [Markup.button.callback(c.title || c.name || `Чат ${c.id}`, `chat:open:${c.id}`)]);
+            await ctx.reply('Чаты по заявкам показывают текст заявки как название.');
+            const keyboard = chatList.map((c) => [
+                Markup.button.callback(
+                    truncateChatTitle(c.title) || c.name || `Чат ${c.id}`,
+                    `chat:open:${c.id}`
+                ),
+            ]);
             await ctx.reply('Ваши чаты:', Markup.inlineKeyboard(keyboard));
         } catch (error) {
             await handleApiError(ctx, session, error, 'Не удалось загрузить чаты.');
@@ -78,6 +100,12 @@ export function createChatHandlers({
             );
             const list = Array.isArray(messages) ? messages : messages?.items || [];
             const participantMap = await loadChatParticipantMap(session, chatId);
+            const chatMetadata = findChatMetadata(session, chatId);
+            if (chatMetadata?.subtitle) {
+                await ctx.reply(`📍 ${chatMetadata.subtitle}`);
+            } else if (chatMetadata?.context?.type === 'request' && chatMetadata?.context?.id) {
+                await ctx.reply(`🧩 По заявке #${chatMetadata.context.id}`);
+            }
             if (!list.length) {
                 await ctx.reply('Сообщений пока нет. Напишите что-нибудь!');
             } else {
