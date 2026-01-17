@@ -41,12 +41,10 @@ export function createChatHandlers({
             session.chatCache = chatList;
             sessionStore.persist();
             await ctx.reply('Чаты по заявкам показывают текст заявки как название.');
-            const keyboard = chatList.map((c) => [
-                Markup.button.callback(
-                    truncateChatTitle(c.title) || c.name || `Чат ${c.id}`,
-                    `chat:open:${c.id}`
-                ),
-            ]);
+            const keyboard = chatList.map((c) => {
+                const baseTitle = c.title || c.name || `Чат ${c.id}`;
+                return [Markup.button.callback(truncateChatTitle(baseTitle), `chat:open:${c.id}`)];
+            });
             await ctx.reply('Ваши чаты:', Markup.inlineKeyboard(keyboard));
         } catch (error) {
             await handleApiError(ctx, session, error, 'Не удалось загрузить чаты.');
