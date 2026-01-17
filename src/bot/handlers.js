@@ -12,6 +12,7 @@ export function registerBotHandlers({
     setLoggedIn,
     sessionHelpers,
     menu,
+    startFlow,
     authHandlers,
     geoHelpers,
     requestHandlers,
@@ -60,32 +61,15 @@ export function registerBotHandlers({
 
     const { loadChats, showChat, sendMessageToChat } = chatHandlers;
 
-    bot.start((ctx) => {
-        const session = getSession(ctx);
-        const telegramUserId = ensureTelegramUserId(ctx, 'bot.start');
-        if (!telegramUserId) {
-            return;
-        }
-        const loggedIn = getLoggedIn(telegramUserId);
-        if (loggedIn) {
-            session.token = loggedIn.jwt;
-            session.backendUserId = loggedIn.userId;
-            sessionStore.persist();
-            return menu.sendMainMenu(ctx.chat.id, { email: loggedIn.email });
-        }
-        if (session.token) {
-            setLoggedIn(telegramUserId, {
-                userId: session.backendUserId,
-                email: session.lastEmail,
-                jwt: session.token,
-            });
-            return menu.sendMainMenu(ctx.chat.id, { email: session.lastEmail });
-        }
-        session.state = 'awaiting_email';
-        session.temp = {};
-        sessionStore.persist();
-        const hint = session.lastEmail ? `\n(Последний использованный email: ${session.lastEmail})` : '';
-        return ctx.reply(`Введите ваш email для входа.${hint}`);
+    bot.start((ctx) => startFlow(ctx));
+
+    bot.action('START_SESSION', async (ctx) => {
+        await ctx.answerCbQuery();
+        await startFlow(ctx, { forceRestart: true });
+    });
+
+    bot.hears(/^Старт$/i, async (ctx) => {
+        await startFlow(ctx, { forceRestart: true });
     });
 
     bot.command('ping', async (ctx) => {

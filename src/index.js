@@ -18,6 +18,7 @@ import { createRequestHandlers } from './bot/requests.js';
 import { createMatchHandlers } from './bot/matches.js';
 import { createChatHandlers } from './bot/chats.js';
 import { createLoginHandler } from './bot/login.js';
+import { createStartFlow } from './bot/startFlow.js';
 import { registerBotHandlers } from './bot/handlers.js';
 
 const logger = console;
@@ -59,6 +60,13 @@ const { handleApiError } = createErrorHandlers({
 });
 
 const menu = createMenu({ bot, logger, MAIN_MENU_KEYBOARD });
+const startFlow = createStartFlow({
+    sessionStore,
+    getLoggedIn,
+    setLoggedIn,
+    menu,
+    logger,
+});
 
 const authHandlers = createAuthHandlers({
     apiRequest: (method, url, data, token) => apiClient.request(method, url, data, token),
@@ -82,7 +90,6 @@ const requestHandlers = createRequestHandlers({
     MAIN_MENU_KEYBOARD,
     handleApiError,
     ensureTelegramUserId: sessionHelpers.ensureTelegramUserId,
-    clearSessionAuth: sessionHelpers.clearSessionAuth,
     formatRequestSummary,
 });
 
@@ -104,7 +111,6 @@ const matchHandlers = createMatchHandlers({
     NEGATIVE_REASON_OPTIONS,
     handleApiError,
     ensureTelegramUserId: sessionHelpers.ensureTelegramUserId,
-    clearSessionAuth: sessionHelpers.clearSessionAuth,
     formatMatchMessage,
     sessionStore,
     enterChatState: sessionHelpers.enterChatState,
@@ -134,6 +140,7 @@ registerBotHandlers({
     setLoggedIn,
     sessionHelpers,
     menu,
+    startFlow,
     authHandlers,
     geoHelpers,
     requestHandlers,
