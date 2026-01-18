@@ -98,15 +98,24 @@ export function createNotificationServiceFromEnv(bot) {
 }
 
 export async function sendNewMessageNotification({ bot, payload, logger = console }) {
+    const { telegramChatId, chatId, senderDisplayName, textPreview, messageId } = payload || {};
     if (!bot) {
-        logger.error('sendNewMessageNotification called without bot instance');
+        logger.warn('[telegram] new-message notify skipped', {
+            reason: 'bot_not_initialized',
+            telegramChatId,
+            chatId,
+            messageId,
+        });
         return;
     }
 
-    const { telegramChatId, chatId, senderDisplayName, textPreview } = payload || {};
-
     if (!telegramChatId) {
-        logger.warn('Skipping notification because telegramChatId is missing');
+        logger.warn('[telegram] new-message notify skipped', {
+            reason: 'missing_telegramChatId',
+            telegramChatId,
+            chatId,
+            messageId,
+        });
         return;
     }
 
@@ -114,13 +123,32 @@ export async function sendNewMessageNotification({ bot, payload, logger = consol
     const callbackData = `chat:open:${chatId}`;
 
     try {
-        await bot.telegram.sendMessage(telegramChatId, messageText, {
+        logger.info('[telegram] new-message notify attempt', {
+            telegramChatId,
+            chatId,
+            messageId,
+        });
+        const result = await bot.telegram.sendMessage(telegramChatId, messageText, {
             reply_markup: {
                 inline_keyboard: [[{ text: 'Открыть чат', callback_data: callbackData }]],
             },
         });
+        logger.info('[telegram] new-message notify sent', {
+            telegramChatId,
+            chatId,
+            messageId,
+            telegramMessageId: result?.message_id,
+        });
     } catch (error) {
-        logger.error(`Failed to send new message notification to Telegram chat ${telegramChatId}`, error);
+        const response = error?.response;
+        logger.error('[telegram] new-message notify failed', {
+            telegramChatId,
+            chatId,
+            messageId,
+            httpStatus: response?.status || response?.statusCode,
+            telegramErrorCode: response?.error_code || response?.errorCode || response?.body?.error_code,
+            error: { message: error?.message },
+        });
     }
 }
 

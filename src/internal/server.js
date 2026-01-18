@@ -36,6 +36,18 @@ export function startInternalServer({ bot, logger = console }) {
 
     app.use(express.json());
 
+    app.use((err, req, res, next) => {
+        if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+            logger.warn('[internal] notify-new-message JSON parse error', {
+                route: req.originalUrl,
+                method: req.method,
+                error: err.message,
+            });
+            return res.status(400).json({ error: 'Bad Request' });
+        }
+        return next(err);
+    });
+
     app.use((req, res, next) => {
         const providedToken = req.get('X-Internal-Token');
         if (!expectedToken || providedToken !== expectedToken) {
@@ -47,13 +59,32 @@ export function startInternalServer({ bot, logger = console }) {
 
     app.post('/internal/telegram/notify-new-message', async (req, res) => {
         const payload = req.body;
+        const { telegramChatId, chatId, messageId } = payload && typeof payload === 'object' ? payload : {};
+        logger.info('[internal] notify-new-message received', {
+            route: req.originalUrl,
+            method: req.method,
+            telegramChatId,
+            chatId,
+            messageId,
+        });
         const validationError = validatePayload(payload);
         if (validationError) {
+            logger.warn('[internal] notify-new-message invalid payload', {
+                validationError,
+                telegramChatId,
+                chatId,
+                messageId,
+            });
             return res.status(400).json({ error: validationError });
         }
 
         if (!isValidId(payload.telegramChatId)) {
-            logger.warn('Invalid telegramChatId received for notify-new-message');
+            logger.warn('[internal] notify-new-message skipped', {
+                reason: 'invalid_telegramChatId',
+                telegramChatId,
+                chatId,
+                messageId,
+            });
             return res.status(200).json({ status: 'skipped' });
         }
 
