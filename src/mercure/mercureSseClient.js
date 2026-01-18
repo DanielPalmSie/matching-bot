@@ -340,4 +340,3 @@ export class MercureSseClient extends EventEmitter {
 }
 
 export default MercureSseClient;
-//
