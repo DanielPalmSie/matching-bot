@@ -29,6 +29,11 @@ export class MercureSseClient extends EventEmitter {
         this.abortController = null;
         this.reader = null;
         this.subscriptionCounter = 0;
+        this.streamGeneration = 0;
+        this.activeGeneration = null;
+        this.restartTimer = null;
+        this.pendingRestartReason = null;
+        this.restartDelayMs = 200;
     }
 
     subscribe(topic, handler) {
@@ -44,13 +49,19 @@ export class MercureSseClient extends EventEmitter {
         this.subscriptionHandlers.set(subscriptionId, handler);
         this.subscriptionTopics.set(subscriptionId, topic);
 
-        console.log('BOT SUBSCRIBED', {
-            topics: Array.from(this.topics.keys()),
+        console.log('TOPIC_ADDED', {
+            topic,
+            totalTopics: this.topics.size,
+            reason: 'subscribe',
             subscriptionId,
             timestamp: new Date().toISOString(),
         });
 
-        this.ensureConnection();
+        if (this.connectionActive) {
+            this.scheduleRestart('topic_added');
+        } else {
+            this.ensureConnection();
+        }
 
         return () => {
             this.unsubscribe(subscriptionId);
@@ -70,35 +81,105 @@ export class MercureSseClient extends EventEmitter {
 
         if (this.topics.size === 0) {
             this.stop();
+            return;
+        }
+
+        if (this.connectionActive) {
+            this.scheduleRestart('topic_removed');
         }
     }
 
     stop() {
+        this.clearScheduledRestart();
         this.connectionActive = false;
         if (this.abortController) {
             this.abortController.abort();
         }
         this.reader = null;
+        this.activeGeneration = null;
     }
 
     ensureConnection() {
         if (this.connectionActive || this.topics.size === 0) {
             return;
         }
-        this.startStream();
+        this.restartStream('initial_connect');
     }
 
-    async startStream() {
+    clearScheduledRestart() {
+        if (this.restartTimer) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
+            this.pendingRestartReason = null;
+        }
+    }
+
+    scheduleRestart(reason) {
+        if (this.restartTimer) {
+            this.pendingRestartReason = reason;
+            return;
+        }
+        const delayMs = this.restartDelayMs;
+        const generation = this.streamGeneration + 1;
+        this.pendingRestartReason = reason;
+        console.log('SSE_RESTART_SCHEDULED', {
+            reason,
+            delayMs,
+            totalTopics: this.topics.size,
+            generation,
+            timestamp: new Date().toISOString(),
+        });
+        this.restartTimer = setTimeout(() => {
+            const pendingReason = this.pendingRestartReason || reason;
+            this.restartTimer = null;
+            this.pendingRestartReason = null;
+            this.restartStream(pendingReason);
+        }, delayMs);
+    }
+
+    closeStream(reason, generation) {
+        if (this.abortController) {
+            console.log('SSE_STREAM_CLOSING', {
+                generation: generation ?? this.activeGeneration,
+                reason,
+                timestamp: new Date().toISOString(),
+            });
+            this.abortController.abort();
+        }
+        this.reader = null;
+        this.abortController = null;
+    }
+
+    restartStream(reason) {
         if (!this.jwt) {
             console.warn('Mercure subscriber JWT not provided; SSE is disabled.');
             return;
         }
-        if (this.topics.size === 0) {
+        const topicsSnapshot = Array.from(this.topics.keys());
+        if (topicsSnapshot.length === 0) {
+            this.stop();
             return;
         }
 
         this.connectionActive = true;
-        const hubUrl = buildHubUrl(this.hubUrl, Array.from(this.topics.keys()));
+        this.clearScheduledRestart();
+        this.closeStream(reason, this.activeGeneration);
+        const nextGeneration = this.streamGeneration + 1;
+        this.streamGeneration = nextGeneration;
+        this.activeGeneration = nextGeneration;
+        this.startStream(nextGeneration, topicsSnapshot);
+    }
+
+    async startStream(generation, topicsSnapshot) {
+        if (!this.jwt) {
+            console.warn('Mercure subscriber JWT not provided; SSE is disabled.');
+            return;
+        }
+        if (!this.connectionActive || topicsSnapshot.length === 0) {
+            return;
+        }
+
+        const hubUrl = buildHubUrl(this.hubUrl, topicsSnapshot);
         this.abortController = new AbortController();
 
         try {
@@ -117,44 +198,52 @@ export class MercureSseClient extends EventEmitter {
 
             this.currentBackoff = this.backoffMs;
             this.reader = response.body.getReader();
-            console.log('BOT SSE CONNECTED', {
+            console.log('SSE_STREAM_STARTED', {
+                generation,
                 hubUrl,
-                topics: Array.from(this.topics.keys()),
+                topics: topicsSnapshot,
                 timestamp: new Date().toISOString(),
             });
-            await this.consumeStream();
+            await this.consumeStream(generation);
         } catch (error) {
-            if (!this.connectionActive) {
+            if (!this.connectionActive || this.activeGeneration !== generation) {
                 return;
             }
-            console.error('Mercure SSE connection error', error);
-            this.scheduleReconnect();
+            console.error('SSE_STREAM_ERROR', {
+                generation,
+                error: error?.message ?? String(error),
+                timestamp: new Date().toISOString(),
+            });
+            this.scheduleReconnect(generation);
         }
     }
 
-    scheduleReconnect() {
-        if (!this.connectionActive) {
+    scheduleReconnect(generation) {
+        if (!this.connectionActive || this.activeGeneration !== generation) {
             return;
         }
         const delay = Math.min(this.currentBackoff, this.maxBackoffMs);
         this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
-        console.log('BOT SSE RECONNECTING', {
+        console.log('SSE_STREAM_RECONNECTING', {
+            generation,
             delayMs: delay,
             nextBackoffMs: this.currentBackoff,
             topics: Array.from(this.topics.keys()),
             timestamp: new Date().toISOString(),
         });
         setTimeout(() => {
-            this.connectionActive = false;
-            this.startStream();
+            if (!this.connectionActive || this.activeGeneration !== generation) {
+                return;
+            }
+            this.restartStream('reconnect');
         }, delay);
     }
 
-    async consumeStream() {
+    async consumeStream(generation) {
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
 
-        while (this.connectionActive && this.reader) {
+        while (this.connectionActive && this.reader && this.activeGeneration === generation) {
             const { done, value } = await this.reader.read();
             if (done) {
                 throw new Error('Mercure stream closed');
@@ -165,12 +254,12 @@ export class MercureSseClient extends EventEmitter {
             while ((separatorIndex = buffer.indexOf('\n\n')) !== -1) {
                 const rawEvent = buffer.slice(0, separatorIndex);
                 buffer = buffer.slice(separatorIndex + 2);
-                this.handleRawEvent(rawEvent);
+                this.handleRawEvent(rawEvent, generation);
             }
         }
     }
 
-    handleRawEvent(rawEvent) {
+    handleRawEvent(rawEvent, generation) {
         const dataLines = [];
         const topics = [];
         let eventId = null;
@@ -196,13 +285,20 @@ export class MercureSseClient extends EventEmitter {
         const dataString = dataLines.join('\n');
         try {
             const payload = JSON.parse(dataString);
-            console.log('BOT EVENT RECEIVED', {
+            const derivedTopics = topics && topics.length ? topics : this.deriveTopicsFromPayload(payload);
+            const derivedTopic = derivedTopics && derivedTopics.length ? derivedTopics[0] : null;
+            const payloadTelegramUserId =
+                payload?.telegramUserId || payload?.telegram_user_id || payload?.telegram_userId || null;
+            const payloadChatId = payload?.chatId || payload?.chat_id || payload?.telegram_chat_id || null;
+            console.log('SSE_EVENT_RECEIVED', {
+                generation,
                 eventType: eventType || null,
-                rawData: dataString,
-                topics,
+                derivedTopic,
+                payloadTelegramUserId,
+                payloadChatId,
                 timestamp: new Date().toISOString(),
             });
-            this.dispatchEvent({ payload, topics, eventId, eventType });
+            this.dispatchEvent({ payload, topics: derivedTopics, eventId, eventType });
         } catch (error) {
             console.warn('Failed to parse Mercure payload', error, dataString);
         }

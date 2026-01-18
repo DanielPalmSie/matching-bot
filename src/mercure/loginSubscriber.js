@@ -19,7 +19,11 @@ export class LoginMercureSubscriber {
         }
 
         const topic = `/tg/login/${key}`;
-        console.log('BOT SUBSCRIBED', { topics: [topic], timestamp: new Date().toISOString() });
+        console.log('LOGIN_SUBSCRIPTION_REQUESTED', {
+            telegramUserId: key,
+            topic,
+            timestamp: new Date().toISOString(),
+        });
 
         const unsubscribe = this.mercureClient.subscribe(topic, (payload) => {
             console.log('[Mercure] Received raw payload for topic', topic, payload);
