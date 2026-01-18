@@ -156,19 +156,18 @@ loginMercureSubscriber = new LoginMercureSubscriber({
     onUserLoggedIn: handleUserLoggedInEvent,
 });
 
+try {
+    logger.info('[internal] starting internal server');
+    internalServer = startInternalServer({bot, logger});
+    logger.info('[internal] internal server started');
+} catch (err) {
+    logger.error('[internal] failed to start internal server', err);
+}
+
 bot.launch()
     .then(() => {
         console.log('Matching bot started');
-
         notificationService = createNotificationServiceFromEnv(bot);
-
-        try {
-            logger.info('[internal] starting internal server');
-            internalServer = startInternalServer({bot, logger});
-            logger.info('[internal] internal server started');
-        } catch (err) {
-            logger.error('[internal] failed to start internal server', err);
-        }
     })
     .catch((err) => {
         logger.error('[bot] failed to launch bot', err);
