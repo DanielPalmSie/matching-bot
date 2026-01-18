@@ -97,5 +97,31 @@ export function createNotificationServiceFromEnv(bot) {
     return new ChatLiveNotificationService({ bot, mercureClient });
 }
 
+export async function sendNewMessageNotification({ bot, payload, logger = console }) {
+    if (!bot) {
+        logger.error('sendNewMessageNotification called without bot instance');
+        return;
+    }
+
+    const { telegramChatId, chatId, senderDisplayName, textPreview } = payload || {};
+
+    if (!telegramChatId) {
+        logger.warn('Skipping notification because telegramChatId is missing');
+        return;
+    }
+
+    const messageText = `📩 Новое сообщение от ${senderDisplayName}\n\n${textPreview}`;
+    const callbackData = `chat:open:${chatId}`;
+
+    try {
+        await bot.telegram.sendMessage(telegramChatId, messageText, {
+            reply_markup: {
+                inline_keyboard: [[{ text: 'Открыть чат', callback_data: callbackData }]],
+            },
+        });
+    } catch (error) {
+        logger.error(`Failed to send new message notification to Telegram chat ${telegramChatId}`, error);
+    }
+}
+
 export { ChatLiveNotificationService };
-//
