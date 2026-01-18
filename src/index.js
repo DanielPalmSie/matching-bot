@@ -1,26 +1,26 @@
-import { Telegraf } from 'telegraf';
-import { API_ROUTES } from './config/apiRoutes.js';
-import { createNotificationServiceFromEnv } from './notifications.js';
-import { startInternalServer } from './internal/server.js';
+import {Telegraf} from 'telegraf';
+import {API_ROUTES} from './config/apiRoutes.js';
+import {createNotificationServiceFromEnv} from './notifications.js';
+import {startInternalServer} from './internal/server.js';
 import LoginMercureSubscriber from './mercure/loginSubscriber.js';
-import { getLoggedIn, setLoggedIn } from './auth/loginState.js';
+import {getLoggedIn, setLoggedIn} from './auth/loginState.js';
 import SessionStore from './services/sessionStore.js';
-import ApiClient, { ApiError } from './services/apiClient.js';
+import ApiClient, {ApiError} from './services/apiClient.js';
 import GeoClient from './services/geoClient.js';
-import { formatMatchMessage, formatRequestSummary } from './utils/messageFormatter.js';
-import { getTelegramUserIdFromContext, getTokenPrefix } from './utils/telegramUserId.js';
-import { MAIN_MENU_KEYBOARD, NEGATIVE_REASON_OPTIONS, GEO_SELECTION_TTL_MS } from './bot/constants.js';
-import { createSessionHelpers } from './bot/session.js';
-import { createErrorHandlers } from './bot/errors.js';
-import { createAuthHandlers } from './bot/auth.js';
-import { createMenu } from './bot/menu.js';
-import { createGeoHelpers } from './bot/geo.js';
-import { createRequestHandlers } from './bot/requests.js';
-import { createMatchHandlers } from './bot/matches.js';
-import { createChatHandlers } from './bot/chats.js';
-import { createLoginHandler } from './bot/login.js';
-import { createStartFlow } from './bot/startFlow.js';
-import { registerBotHandlers } from './bot/handlers.js';
+import {formatMatchMessage, formatRequestSummary} from './utils/messageFormatter.js';
+import {getTelegramUserIdFromContext, getTokenPrefix} from './utils/telegramUserId.js';
+import {MAIN_MENU_KEYBOARD, NEGATIVE_REASON_OPTIONS, GEO_SELECTION_TTL_MS} from './bot/constants.js';
+import {createSessionHelpers} from './bot/session.js';
+import {createErrorHandlers} from './bot/errors.js';
+import {createAuthHandlers} from './bot/auth.js';
+import {createMenu} from './bot/menu.js';
+import {createGeoHelpers} from './bot/geo.js';
+import {createRequestHandlers} from './bot/requests.js';
+import {createMatchHandlers} from './bot/matches.js';
+import {createChatHandlers} from './bot/chats.js';
+import {createLoginHandler} from './bot/login.js';
+import {createStartFlow} from './bot/startFlow.js';
+import {registerBotHandlers} from './bot/handlers.js';
 
 const logger = console;
 
@@ -34,8 +34,8 @@ if (!botToken) {
     process.exit(1);
 }
 
-const apiClient = new ApiClient({ baseUrl: apiUrl });
-const geoClient = new GeoClient({ apiClient, logger });
+const apiClient = new ApiClient({baseUrl: apiUrl});
+const geoClient = new GeoClient({apiClient, logger});
 const sessionStore = new SessionStore();
 const bot = new Telegraf(botToken);
 let notificationService = null;
@@ -55,13 +55,13 @@ const sessionHelpers = createSessionHelpers({
     setLoggedIn,
 });
 
-const { handleApiError } = createErrorHandlers({
+const {handleApiError} = createErrorHandlers({
     ApiError,
     resolveTelegramUserId: sessionHelpers.resolveTelegramUserId,
     clearSessionAuth: sessionHelpers.clearSessionAuth,
 });
 
-const menu = createMenu({ bot, logger, MAIN_MENU_KEYBOARD });
+const menu = createMenu({bot, logger, MAIN_MENU_KEYBOARD});
 const startFlow = createStartFlow({
     sessionStore,
     getLoggedIn,
@@ -82,7 +82,7 @@ const authHandlers = createAuthHandlers({
     API_ROUTES,
 });
 
-const geoHelpers = createGeoHelpers({ sessionStore, ApiError, GEO_SELECTION_TTL_MS });
+const geoHelpers = createGeoHelpers({sessionStore, ApiError, GEO_SELECTION_TTL_MS});
 
 const requestHandlers = createRequestHandlers({
     apiRequest: (method, url, data, token) => apiClient.request(method, url, data, token),
@@ -118,7 +118,7 @@ const matchHandlers = createMatchHandlers({
     enterChatState: sessionHelpers.enterChatState,
 });
 
-const { handleUserLoggedInEvent } = createLoginHandler({
+const {handleUserLoggedInEvent} = createLoginHandler({
     logger,
     apiRequest: (method, url, data, token) => apiClient.request(method, url, data, token),
     API_ROUTES,
@@ -156,11 +156,24 @@ loginMercureSubscriber = new LoginMercureSubscriber({
     onUserLoggedIn: handleUserLoggedInEvent,
 });
 
-bot.launch().then(() => {
-    console.log('Matching bot started');
-    notificationService = createNotificationServiceFromEnv(bot);
-    internalServer = startInternalServer({ bot, logger });
-});
+bot.launch()
+    .then(() => {
+        console.log('Matching bot started');
+
+        notificationService = createNotificationServiceFromEnv(bot);
+
+        try {
+            logger.info('[internal] starting internal server');
+            internalServer = startInternalServer({bot, logger});
+            logger.info('[internal] internal server started');
+        } catch (err) {
+            logger.error('[internal] failed to start internal server', err);
+        }
+    })
+    .catch((err) => {
+        logger.error('[bot] failed to launch bot', err);
+        process.exit(1);
+    });
 
 process.once('SIGINT', () => {
     if (notificationService) notificationService.stop();
