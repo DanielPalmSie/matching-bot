@@ -153,4 +153,3 @@ export async function sendNewMessageNotification({ bot, payload, logger = consol
 }
 
 export { ChatLiveNotificationService };
-//
