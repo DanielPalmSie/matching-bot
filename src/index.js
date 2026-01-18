@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { API_ROUTES } from './config/apiRoutes.js';
 import { createNotificationServiceFromEnv } from './notifications.js';
+import { startInternalServer } from './internal/server.js';
 import LoginMercureSubscriber from './mercure/loginSubscriber.js';
 import { getLoggedIn, setLoggedIn } from './auth/loginState.js';
 import SessionStore from './services/sessionStore.js';
@@ -39,6 +40,7 @@ const sessionStore = new SessionStore();
 const bot = new Telegraf(botToken);
 let notificationService = null;
 let loginMercureSubscriber = null;
+let internalServer = null;
 
 const getNotificationService = () => notificationService;
 const getLoginMercureSubscriber = () => loginMercureSubscriber;
@@ -157,15 +159,18 @@ loginMercureSubscriber = new LoginMercureSubscriber({
 bot.launch().then(() => {
     console.log('Matching bot started');
     notificationService = createNotificationServiceFromEnv(bot);
+    internalServer = startInternalServer({ bot, logger });
 });
 
 process.once('SIGINT', () => {
     if (notificationService) notificationService.stop();
     if (loginMercureSubscriber) loginMercureSubscriber.stop();
+    if (internalServer) internalServer.close();
     bot.stop('SIGINT');
 });
 process.once('SIGTERM', () => {
     if (notificationService) notificationService.stop();
     if (loginMercureSubscriber) loginMercureSubscriber.stop();
+    if (internalServer) internalServer.close();
     bot.stop('SIGTERM');
 });
